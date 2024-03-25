@@ -1,5 +1,5 @@
 # Heavily inspired by Andrej Karpathy's micrograd and George Hotz' tinygrad
-# adds automatic differentiation to numpy
+# automatic differentiation with a numpy backend
 import numpy as np
 
 
