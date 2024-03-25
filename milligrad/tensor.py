@@ -20,10 +20,8 @@ def topological_sort(tensor:"Tensor")->list["Tensor"]:
 class Tensor:
     _no_grad = False
     class no_grad:
-        def __enter__(self):
-            self.previous_no_grad, Tensor._no_grad = Tensor._no_grad, True 
-            return self
-        def __exit__(self, *args): Tensor._no_grad = self.previous_no_grad
+        def __enter__(self): self.prev_no_grad, Tensor._no_grad = Tensor._no_grad, True 
+        def __exit__(self, *args): Tensor._no_grad = self.prev_no_grad
 
     def __init__(self, data:np.ndarray|list, _children:tuple["Tensor"]=(), name=""):
         self.data = np.array(data)
@@ -35,15 +33,15 @@ class Tensor:
         self.name = name # nice to have
         
     @classmethod
-    def zeros(cls, *shape:int)->"Tensor": return cls(np.zeros(shape))
+    def zeros(cls, *shape:int, name="")->"Tensor": return cls(np.zeros(shape), name=name)
     @classmethod
-    def ones(cls, *shape:int)->"Tensor": return cls(np.ones(shape))
+    def ones(cls, *shape:int, name="")->"Tensor": return cls(np.ones(shape), name=name)
     @classmethod
-    def randn(cls, *shape:int)->"Tensor": return cls(np.random.randn(*shape))
+    def randn(cls, *shape:int, name="")->"Tensor": return cls(np.random.randn(*shape), name=name)
     @classmethod
-    def xavier(cls, n_in:int, n_out:int)->"Tensor":
+    def xavier(cls, n_in:int, n_out:int, name="")->"Tensor":
         bound = np.sqrt(6/(n_in + n_out))
-        return cls(np.random.uniform(-bound, bound, (n_in, n_out)))
+        return cls(np.random.uniform(-bound, bound, (n_in, n_out)), name=name)
     
     def __add__(self, other:"Tensor")->"Tensor":
         out = Tensor(self.data + other.data, (self, other), "+")
