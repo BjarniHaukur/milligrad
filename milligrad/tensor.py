@@ -129,6 +129,42 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
+    def softmax(self)->"Tensor":
+        e = np.exp(self.data - np.max(self.data, axis=-1, keepdims=True)) # for numerical stability
+        out = Tensor(e / np.sum(e, axis=-1, keepdims=True), (self,), "softmax")
+        
+        def _backward():
+            jacobian = np.zeros((out.data.size, out.data.size))
+            flat_out = out.data.flatten()
+            jacobian = flat_out[:,None] * (np.eye(out.data.size) - flat_out[None,:])
+            self.grad += (jacobian.T @ out.grad.flatten()).reshape(self.data.shape)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    def log_softmax(self)->"Tensor":
+        e = self.data - np.max(self.data, axis=-1, keepdims=True)
+        log_sum_exp = np.log(np.sum(np.exp(e), axis=-1, keepdims=True))
+        out = Tensor(e - log_sum_exp, (self,), "log_softmax")
+        
+        def _backward():
+            jacobian = np.eye(out.data.size) - np.exp(out.data).flatten()
+            self.grad += (jacobian.T @ out.grad.flatten()).reshape(self.data.shape)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+        
+    
+    def categorical_cross_entropy(self, target:"Tensor")->"Tensor":
+        assert self.shape == target.shape, "Input and target shapes must match"
+        out = Tensor(-np.sum(target.data * self.data, axis=-1), (self, target), "categorical_cross_entropy")
+        
+        def _backward():
+            self.grad += -target.data
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
     @property
     def T(self)->"Tensor":
         out = Tensor(self.data.T, (self,), "T")
