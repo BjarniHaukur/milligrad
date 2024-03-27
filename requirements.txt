@@ -1,0 +1,8 @@
+# For milligrad
+numpy
+
+# For tests
+pytest
+
+# For examples and extras
+requests

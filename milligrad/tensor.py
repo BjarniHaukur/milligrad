@@ -153,8 +153,18 @@ class Tensor:
             
         if not Tensor._no_grad: self._backward = _backward
         return out
-        
     
+    def nll_loss(self, target:"Tensor")->"Tensor":
+        assert self.shape == target.shape, "Input and target shapes must match"
+        out = Tensor(-self.data[np.arange(len(self.data)), target.data].mean(), (self, target), "nll_loss")
+        
+        def _backward():
+            self.grad += np.zeros_like(self.data)
+            self.grad[np.arange(len(self.data)), target.data] = -1/len(self.data)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+        
     def categorical_cross_entropy(self, target:"Tensor")->"Tensor":
         assert self.shape == target.shape, "Input and target shapes must match"
         out = Tensor(-np.sum(target.data * self.data, axis=-1), (self, target), "categorical_cross_entropy")
