@@ -44,9 +44,9 @@ def load_mnist_data():
         "test_labels": "t10k-labels-idx1-ubyte.gz"
     }
 
-    train_images = load_images(base_url, files['train_images'])
+    train_images = load_images(base_url, files['train_images']).astype(np.float32)
     train_labels = load_labels(base_url, files['train_labels'])
-    test_images = load_images(base_url, files['test_images'])
+    test_images = load_images(base_url, files['test_images']).astype(np.float32)
     test_labels = load_labels(base_url, files['test_labels'])
 
     return (train_images, train_labels), (test_images, test_labels)

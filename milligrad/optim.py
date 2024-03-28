@@ -16,7 +16,6 @@ class Optimizer(ABC):
     def zero_grad(self):
         for p in self.params:
             p.grad = np.zeros_like(p.data)
-            
 
 class GD(Optimizer):
     def __init__(self, params:list[Tensor], lr:float=0.01):
@@ -26,7 +25,6 @@ class GD(Optimizer):
     def step(self):
         for p in self.params:
             p.data -= self.lr * p.grad
-            
             
 class Momentum(Optimizer):
     def __init__(self, params:list[Tensor], lr:float=0.01, momentum:float=0.9):

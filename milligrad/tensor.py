@@ -102,6 +102,15 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
+    def mean(self, axis:int=-1)->"Tensor":
+        out = Tensor(self.data.mean(axis), (self,), "mean")
+        
+        def _backward():
+            self.grad += np.expand_dims(out.grad, axis) / self.data.shape[axis]
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
     def relu(self)->"Tensor":
         out = Tensor(np.maximum(self.data, 0), (self,), "relu")
         
@@ -143,7 +152,7 @@ class Tensor:
         return out
     
     def log_softmax(self)->"Tensor":
-        e = self.data - np.max(self.data, axis=-1, keepdims=True)
+        e = self.data - np.max(self.data, axis=-1, keepdims=True) # for numerical stability
         log_sum_exp = np.log(np.sum(np.exp(e), axis=-1, keepdims=True))
         out = Tensor(e - log_sum_exp, (self,), "log_softmax")
         
@@ -154,20 +163,10 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def nll_loss(self, target:"Tensor")->"Tensor":
-        assert self.shape == target.shape, "Input and target shapes must match"
-        out = Tensor(-self.data[np.arange(len(self.data)), target.data].mean(), (self, target), "nll_loss")
-        
-        def _backward():
-            self.grad += np.zeros_like(self.data)
-            self.grad[np.arange(len(self.data)), target.data] = -1/len(self.data)
-            
-        if not Tensor._no_grad: self._backward = _backward
-        return out
         
     def categorical_cross_entropy(self, target:"Tensor")->"Tensor":
         assert self.shape == target.shape, "Input and target shapes must match"
-        out = Tensor(-np.sum(target.data * self.data, axis=-1), (self, target), "categorical_cross_entropy")
+        out = Tensor(-np.sum(target.data * self.log_softmax().data, axis=-1), (self, target), "categorical_cross_entropy")
         
         def _backward():
             self.grad += -target.data
