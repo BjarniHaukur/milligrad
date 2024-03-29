@@ -268,10 +268,6 @@ class Tensor:
     def min(self, axis:int=-1)->Tensor:
         return -(-self).max(axis)
     
-    def cross_entropy(self, target_dist:Tensor)->Tensor:
-        assert self.shape == target_dist.shape, "Input and target distribution must have the same shape"
-        return -(target_dist * self.log_softmax()).sum(axis=-1).mean()
-    
     def __repr__(self):
         data_repr = self.data.__repr__().removeprefix("array")[1:-1] # drop array and parentheses
         grad_repr = ", grad_fn=" + self._grad_fn if self._grad_fn else "" # if grad_fn is empty, don't show it
