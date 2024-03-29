@@ -223,6 +223,7 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
+    # can be replaced with .softmax().log() but this is more efficient and numerically stable
     def log_softmax(self, axis:int=-1)->Tensor:
         shifted = self.data - np.max(self.data, axis=axis, keepdims=True)
         log_probs = shifted - np.log(np.exp(shifted).sum(axis=axis, keepdims=True))
