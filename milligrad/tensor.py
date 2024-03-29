@@ -25,27 +25,27 @@ class Tensor:
         def __enter__(self): self.prev_no_grad, Tensor._no_grad = Tensor._no_grad, True 
         def __exit__(self, *args): Tensor._no_grad = self.prev_no_grad
 
-    def __init__(self, data:np.ndarray|list, _children:tuple[Tensor]=(), name=""):
+    def __init__(self, data:np.ndarray|list, _children:tuple[Tensor]=(), _grad_fn:str=""):
         self.data = np.array(data)
         self.grad = np.zeros_like(data)
-        self.name = name # nice to have
         
         self._backward = lambda: None # the closure, added by operators
         # "ordered set" (dict keys are ordered in python 3.7+)
         # reversed to backpropagate in the right order
         # required to avoid circular references (e.g. a + a)
         self._prev = dict.fromkeys(reversed(_children)).keys() 
+        self._grad_fn = _grad_fn # nice to have
         
     @classmethod
-    def zeros(cls, *shape:int, name:str=""): return cls(np.zeros(shape), name=name)
+    def zeros(cls, *shape:int): return cls(np.zeros(shape))
     @classmethod
-    def ones(cls, *shape:int, name:str=""): return cls(np.ones(shape), name=name)
+    def ones(cls, *shape:int): return cls(np.ones(shape))
     @classmethod
-    def randn(cls, *shape:int, name:str=""): return cls(np.random.randn(*shape), name=name)
+    def randn(cls, *shape:int): return cls(np.random.randn(*shape))
     @classmethod
-    def xavier(cls, n_in:int, n_out:int, name:str=""):
+    def xavier(cls, n_in:int, n_out:int):
         bound = np.sqrt(6/(n_in + n_out))
-        return cls(np.random.uniform(-bound, bound, (n_in, n_out)), name=name)
+        return cls(np.random.uniform(-bound, bound, (n_in, n_out)))
     
     def backward(self):
         assert not Tensor._no_grad, "No gradient tracking when in no_grad mode"
@@ -191,6 +191,32 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
+    # same with softmax but it would introduce numerical instability 
+    def softmax(self, axis:int=-1)->Tensor:
+        # for numerical stability, subtract the max
+        shifted_exp = np.exp(self.data - np.max(self.data, axis=axis, keepdims=True))
+        out = Tensor(shifted_exp / shifted_exp.sum(axis=-1, keepdims=True), (self,), "softmax")
+        
+        def _backward():
+            # This is the derivative of softmax which includes the Jacobian part.
+            # It takes advantage of the fact that:
+            #   d(softmax)/d(input) = softmax_output * (1 - softmax_output)
+            # along the diagonal
+            # and:
+            #   -softmax_output[i] * softmax_output[j]
+            # for the off-diagonals.
+            
+            # ij,ik->ijk computes the outer product of each pair in softmax_output
+            jacobian_matrix = np.einsum('ij,ik->ijk', out.data, out.data)
+            diag_indices = np.arange(out.shape[-1])
+            # subtract softmax output from the diagonal elements
+            jacobian_matrix[:, diag_indices, diag_indices] -= out.data
+            # Matmul the Jacobian matrix with the gradient of the output
+            self.grad += np.einsum('ijk,ik->ij', jacobian_matrix, out.grad)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
     ############################ Shape-changing operations ############################
     
     @property
@@ -225,25 +251,6 @@ class Tensor:
     def min(self, axis:int=-1)->Tensor:
         return -(-self).max(axis)
     
-    def softmax(self, axis:int=-1)->Tensor:
-        shifted_exp = (self - self.max(axis)).pow()
-        return shifted_exp / shifted_exp.sum(axis).reshape(-1, 1)
-        
-    
-        pass
-        ## for numerical stability we shift the data by its maximum value
-        # shift_exp = np.exp(self.data - self.data.max(axis=-1, keepdims=True))
-        # out = Tensor(shift_exp / shift_exp.sum(axis=-1, keepdims=True), (self,), "softmax")
-        
-        # def _backward():
-        #     # d(softmax(x))/dx = softmax(x) * (I - softmax(x)^)
-        #     softmax_output = out.data
-        #     jacobian = softmax_output * (np.eye(softmax_output.shape[-1]) - softmax_output.reshape(-1, 1))
-        #     self.grad += np.dot(out.grad.reshape(1, -1), jacobian).reshape(self.data.shape)
-            
-        # if not Tensor._no_grad: self._backward = _backward
-        # return out
-    
     def log_softmax(self)->Tensor:
         pass
         # softmax = self.softmax()
@@ -264,7 +271,9 @@ class Tensor:
         # return ((self - target)**2).sum().mean()
             
     def __repr__(self):
-        return self.data.__repr__() # use the numpy repr
+        data_repr = self.data.__repr__().removeprefix("array")[1:-1] # drop array and parentheses
+        grad_repr = ", grad_fn=" + self._grad_fn if self._grad_fn else "" # if grad_fn is empty, don't show it
+        return f"Tensor({data_repr}{grad_repr})"
         
     @property
     def shape(self)->tuple[int]:

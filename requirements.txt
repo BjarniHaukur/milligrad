@@ -3,6 +3,7 @@ numpy
 
 # For tests
 pytest
+torch
 
 # For examples and extras
 requests
