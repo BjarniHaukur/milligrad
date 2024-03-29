@@ -25,11 +25,14 @@ class Tensor:
         def __enter__(self): self.prev_no_grad, Tensor._no_grad = Tensor._no_grad, True 
         def __exit__(self, *args): Tensor._no_grad = self.prev_no_grad
 
-    def __init__(self, data:np.ndarray|list, _children:tuple[Tensor]=(), _grad_fn:str=""):
+    def __init__(self, data:np.ndarray|list|int|float, _children:tuple[Tensor]=(), _grad_fn:str=""):
+        # sometimes isinstance fails in notebooks when changing the class definition
+        # bails out here if data is e.g. Tensor ^^^
+        assert isinstance(data, (np.ndarray, list, int, float)), f"Invalid data type {type(data)}"
         self.data = np.array(data)
         self.grad = np.zeros_like(data)
         
-        self._backward = lambda: None # the closure, added by operators
+        self._backward = lambda: None # a closure, added by operators
         # "ordered set" (dict keys are ordered in python 3.7+)
         # reversed to backpropagate in the right order
         # required to avoid circular references (e.g. a + a)
@@ -52,12 +55,14 @@ class Tensor:
         self.grad = np.ones_like(self.data) # dL/dL = 1
         
         for tensor in reversed(topological_sort(self)):
-            # the _backward functions keep copies of their data in the closure
+            # the _backward functions keep copies of relevant data in the closures
             tensor._backward()
             
     ###################################################################################
     ##### The following operations perform all the necessary gradient bookkeeping #####
     ###################################################################################
+    # note that we use += instead of assignments in the _backward since the same tensor
+    # can be used multiple times in the computation graph
     
     def __add__(self, other:Tensor|int|float)->Tensor:
         other = other if isinstance(other, Tensor) else Tensor(other)
@@ -66,7 +71,8 @@ class Tensor:
         def _backward():
             self.grad += out.grad
             broadcasted = self.shape != other.shape # not pretty, assumes broadcasting over batch
-            other.grad += np.sum(out.grad, axis=-1, keepdims=True) if broadcasted else out.grad
+            grad = np.sum(out.grad, axis=0) if broadcasted else out.grad
+            other.grad += grad.reshape(*other.shape) # e.g. (3,) -> (3,1) or vice versa
             
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -119,6 +125,15 @@ class Tensor:
         
         def _backward():
             self.grad += np.log(base) * base**self.data * out.grad
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    def log(self)->Tensor:
+        out = Tensor(np.log(self.data), (self,), "log")
+        
+        def _backward():
+            self.grad += out.grad / self.data
             
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -193,19 +208,10 @@ class Tensor:
     
     # same with softmax but it would introduce numerical instability 
     def softmax(self, axis:int=-1)->Tensor:
-        # for numerical stability, subtract the max
-        shifted_exp = np.exp(self.data - np.max(self.data, axis=axis, keepdims=True))
+        shifted_exp = np.exp(self.data - np.max(self.data, axis=axis, keepdims=True)) # numerical stability
         out = Tensor(shifted_exp / shifted_exp.sum(axis=-1, keepdims=True), (self,), "softmax")
         
-        def _backward():
-            # This is the derivative of softmax which includes the Jacobian part.
-            # It takes advantage of the fact that:
-            #   d(softmax)/d(input) = softmax_output * (1 - softmax_output)
-            # along the diagonal
-            # and:
-            #   -softmax_output[i] * softmax_output[j]
-            # for the off-diagonals.
-            
+        def _backward():            
             # ij,ik->ijk computes the outer product of each pair in softmax_output
             jacobian_matrix = np.einsum('ij,ik->ijk', out.data, out.data)
             diag_indices = np.arange(out.shape[-1])
@@ -213,6 +219,28 @@ class Tensor:
             jacobian_matrix[:, diag_indices, diag_indices] -= out.data
             # Matmul the Jacobian matrix with the gradient of the output
             self.grad += np.einsum('ijk,ik->ij', jacobian_matrix, out.grad)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    def log_softmax(self, axis:int=-1)->Tensor:
+        shifted = self.data - np.max(self.data, axis=axis, keepdims=True)
+        log_probs = shifted - np.log(np.exp(shifted).sum(axis=axis, keepdims=True))
+        out = Tensor(log_probs, (self,), "log_softmax")
+        
+        def _backward():
+            self.grad += out.grad - np.exp(log_probs) * out.grad.sum(axis=axis, keepdims=True)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    def cross_entropy(self, target_dist:Tensor)->Tensor:
+        assert self.shape == target_dist.shape, "Input and target distribution must have the same shape"
+        log_probs = self.log_softmax()
+        out = -(target_dist * log_probs).sum(axis=-1).mean()
+        
+        def _backward():
+            self.grad += (np.exp(log_probs.data) - target_dist.data) / self.shape[0]
             
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -251,25 +279,11 @@ class Tensor:
     def min(self, axis:int=-1)->Tensor:
         return -(-self).max(axis)
     
-    def log_softmax(self)->Tensor:
-        pass
-        # softmax = self.softmax()
-        # out = Tensor(np.log(softmax.data), (self,), "log_softmax")
-        
-        # def _backward():
-        #     self.grad += (softmax.data - 1) * out.grad
-            
-        # if not Tensor._no_grad: self._backward = _backward
-        # return out
-        
-    def categorical_crossentropy(self, target:Tensor)->Tensor:
-        pass
-        # return (-target * self.log_softmax()).sum().mean()
-        
-    def mse(self, target:Tensor)->Tensor:
-        pass
-        # return ((self - target)**2).sum().mean()
-            
+    # def cross_entropy(self, target_dist:Tensor)->Tensor:
+    #     assert self.shape == target_dist.shape, "Input and target distribution must have the same shape"
+    #     log_probs = self.log_softmax()
+    #     return -(target_dist * log_probs).sum(axis=-1).mean()
+    
     def __repr__(self):
         data_repr = self.data.__repr__().removeprefix("array")[1:-1] # drop array and parentheses
         grad_repr = ", grad_fn=" + self._grad_fn if self._grad_fn else "" # if grad_fn is empty, don't show it
