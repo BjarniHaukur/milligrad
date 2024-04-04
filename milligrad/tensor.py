@@ -19,6 +19,13 @@ def topological_sort(tensor:Tensor)->list[Tensor]:
     _topological_sort(tensor)
     return stack
 
+def broadcast_to(grad:np.ndarray|np.float32, shape:tuple[int])->np.ndarray:
+    if len(grad.shape) > len(shape): 
+        return grad.sum(axis=tuple(range(0, len(grad.shape) - len(shape)))) # starts from 0, aka the batch axis
+    if len(grad.shape) < len(shape): # np.float / np.int etc. has shape ()
+        return np.broadcast_to(grad, shape)
+    return grad
+    
 class Tensor:
     _no_grad = False
     class no_grad:
@@ -55,8 +62,7 @@ class Tensor:
         self.grad = np.ones_like(self.data) # dL/dL = 1
         
         for tensor in reversed(topological_sort(self)):
-            # the _backward functions keep copies of relevant data in the closures
-            tensor._backward()
+            tensor._backward() # relevant data kept in these closures
             
     ###################################################################################
     ##### The following operations perform all the necessary gradient bookkeeping #####
@@ -67,21 +73,10 @@ class Tensor:
     def __add__(self, other:Tensor|int|float)->Tensor:
         other = other if isinstance(other, Tensor) else Tensor(other)
         out = Tensor(self.data + other.data, (self, other), "+")
-        
+
         def _backward():
-            self.grad += out.grad
-            broadcasted = self.shape != other.shape # not pretty, assumes broadcasting over batch
-            grad = np.sum(out.grad, axis=0) if broadcasted else out.grad
-            other.grad += grad.reshape(*other.shape) # e.g. (3,) -> (3,1) or vice versa
-            
-        if not Tensor._no_grad: self._backward = _backward
-        return out
-    
-    def __neg__(self)->Tensor:
-        out = Tensor(-self.data, (self,), "-")
-        
-        def _backward():
-            self.grad += -out.grad
+            self.grad += broadcast_to(out.grad, self.shape)
+            other.grad += broadcast_to(out.grad, other.shape)
             
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -92,10 +87,9 @@ class Tensor:
         out = Tensor(self.data * other.data, (self, other), "*")
         
         def _backward():
-            self.grad += other.data * out.grad
-            broadcasted = self.shape != other.shape # assumes broadcasting over last axis
-            other.grad += np.sum(self.data * out.grad, axis=-1, keepdims=True) if broadcasted else self.data * out.grad
-            
+            self.grad += broadcast_to(out.grad * other.data, self.shape)
+            other.grad += broadcast_to(out.grad * self.data, other.shape)
+        
         if not Tensor._no_grad: self._backward = _backward
         return out
     
@@ -106,6 +100,15 @@ class Tensor:
         def _backward():
             self.grad += out.grad @ other.data.T
             other.grad += self.data.T @ out.grad
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    def __neg__(self)->Tensor:
+        out = Tensor(-self.data, (self,), "-")
+        
+        def _backward():
+            self.grad += -out.grad
             
         if not Tensor._no_grad: self._backward = _backward
         return out

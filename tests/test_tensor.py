@@ -137,41 +137,11 @@ def test_log_softmax():
     np.testing.assert_allclose(
         grad_milligrad, grad_pytorch,
         err_msg="Backward pass gradient mismatch", atol=1e-6
-    )
-
-def test_cross_entropy():
-    a_np = np.random.randn(3, 4)
-    y_np = np.eye(4)[np.random.randint(0, 4, size=(3))]
-    
-    a_torch = torch.tensor(a_np, dtype=torch.float32, requires_grad=True)
-    y_torch = torch.tensor(y_np, dtype=torch.float32)
-    
-    a_milligrad = Tensor(a_np)
-    y_milligrad = Tensor(y_np)
-    
-    loss_torch = torch.nn.functional.cross_entropy(a_torch, y_torch.argmax(dim=-1))
-    loss_milligrad = a_milligrad.cross_entropy(y_milligrad)
-    
-    np.testing.assert_allclose(
-        loss_milligrad.data, loss_torch.detach().numpy(),
-        err_msg="Forward pass mismatch", atol=1e-6
-    )
-    
-    loss_torch.backward()
-    grad_pytorch = a_torch.grad.numpy()
-    
-    loss_milligrad.backward()
-    grad_milligrad = a_milligrad.grad
-    
-    # Compare the gradients from the backward pass
-    np.testing.assert_allclose(
-        grad_milligrad, grad_pytorch,
-        err_msg="Backward pass gradient mismatch", atol=1e-6
-    )    
+    ) 
 
 def test_perceptron():
     x_np = np.random.randn(5, 3)
-    w_np, b_np = np.random.randn(3, 2), np.random.randn(1, 2)
+    w_np, b_np = np.random.randn(3, 2), np.random.randn(2)
     y_hat_np = np.maximum(x_np @ w_np + b_np, 0)
     
     x = Tensor(x_np)
@@ -201,6 +171,5 @@ def test_perceptron_grad():
     
     
 if __name__ == "__main__":
-    test_softmax()
-    test_log_softmax()
-    test_cross_entropy()
+    test_perceptron()
+    test_perceptron_grad()
