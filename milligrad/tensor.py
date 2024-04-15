@@ -20,10 +20,15 @@ def topological_sort(tensor:Tensor)->list[Tensor]:
     return stack
 
 def broadcast_to(grad:np.ndarray|np.float32, shape:tuple[int])->np.ndarray:
-    if len(grad.shape) > len(shape): 
-        return grad.sum(axis=tuple(range(0, len(grad.shape) - len(shape)))) # starts from 0, aka the batch axis
-    if len(grad.shape) < len(shape): # np.float / np.int etc. has shape ()
+    if grad.ndim == 0: 
         return np.broadcast_to(grad, shape)
+    if grad.ndim < len(shape):
+        new_shape = [i if i in grad.shape else 1 for i in shape] # works since dimensions are dropped inplace
+        return np.broadcast_to(grad.reshape(new_shape), shape)
+    if grad.ndim > len(shape):
+        axis = tuple(i for i, s in enumerate(grad.shape) if s not in shape)
+        return grad.sum(axis=axis)
+    
     return grad
     
 class Tensor:
@@ -63,6 +68,7 @@ class Tensor:
         
         for tensor in reversed(topological_sort(self)):
             tensor._backward() # relevant data kept in these closures
+            tensor._backward = lambda: None # free memory, drop closures
             
     ###################################################################################
     ##### The following operations perform all the necessary gradient bookkeeping #####
@@ -141,32 +147,23 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def sum(self, axis:int=-1)->Tensor:
+    def sum(self, axis:int=None)->Tensor:
         out = Tensor(self.data.sum(axis), (self,), "sum")
         
         def _backward():
-            self.grad += np.expand_dims(out.grad, axis) # broadcast the gradient
-            
-        if not Tensor._no_grad: self._backward = _backward
-        return out
-    
-    def mean(self, axis:int=-1)->Tensor:
-        out = Tensor(self.data.mean(axis), (self,), "mean")
-        
-        def _backward():
-            self.grad += np.expand_dims(out.grad, axis) / self.data.shape[axis]
+            self.grad += broadcast_to(out.grad, self.shape) #np.expand_dims(out.grad, axis) # broadcast the gradient
             
         if not Tensor._no_grad: self._backward = _backward
         return out
     
     def std(self, axis:int=-1)->Tensor:
+        N = self.data.size if axis is None else self.data.shape[axis]
         mean = self.data.mean(axis, keepdims=True)
         std_dev = np.sqrt(((self.data - mean)**2).mean(axis, keepdims=True))
-        out = Tensor(std_dev, (self,), "std")
+        out = Tensor(std_dev.squeeze(), (self,), "std") # squeeze to remove the axis
         
         def _backward():
-            N = self.data.shape[axis]
-            self.grad += np.expand_dims(out.grad, axis) * (self.data - mean) / (N * std_dev)
+            self.grad += broadcast_to(out.grad, self.shape) * (self.data - mean) / (N * std_dev)
             
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -267,7 +264,10 @@ class Tensor:
     def __radd__(self, other:int|float)->Tensor: return self + other
     def __rsub__(self, other:int|float)->Tensor: return other + (-self)
     def __rmul__(self, other:int|float)->Tensor: return self * other
-    def __truediv__(self, other:Tensor)->Tensor: return self * other**-1
+    def __truediv__(self, other:int|float|Tensor)->Tensor: return self * other**-1
+    
+    def mean(self, axis:int=None)->Tensor:
+        return self.sum(axis) / (self.data.size if axis is None else self.data.shape[axis])
     
     def min(self, axis:int=-1)->Tensor:
         return -(-self).max(axis)

@@ -63,7 +63,6 @@ class RMSProp(Optimizer):
             self.cache[i] = self.decay_rate * self.cache[i] + (1 - self.decay_rate) * p.grad ** 2
             p.data -= self.lr * p.grad / (np.sqrt(self.cache[i]) + self.epsilon)
             
-            
 # Adam is essentially AdaGrad and RMSProp with bias correction
 class Adam(Optimizer):
     def __init__(self, params: list[Tensor], lr: float = 0.001, beta1: float = 0.9, beta2: float = 0.999, epsilon: float = 1e-8):

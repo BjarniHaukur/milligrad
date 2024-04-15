@@ -33,8 +33,10 @@ def test_sum():
     
     a = Tensor(a_np)
     
-    np.testing.assert_allclose(a.sum(0).data, a_np.sum(axis=0))
-    np.testing.assert_allclose(a.sum(1).data, a_np.sum(axis=1))
+    # Forward pass
+    np.testing.assert_allclose(a.sum().data, a_np.sum(), err_msg="Forward pass mismatch")
+    np.testing.assert_allclose(a.sum(0).data, a_np.sum(axis=0), err_msg="Forward pass mismatch", atol=1e-6)
+    np.testing.assert_allclose(a.sum(1).data, a_np.sum(axis=1), err_msg="Forward pass mismatch", atol=1e-6)
     
 def test_mean():
     # Test case 1: Mean along the last axis
@@ -84,6 +86,58 @@ def test_mean():
         grad_milligrad, grad_pytorch,
         err_msg="Backward pass gradient mismatch", atol=1e-6
     )
+    
+def test_std():
+    # Test case 1: Standard deviation along the last axis
+    a_np = np.random.randn(3, 4)
+    a_torch = torch.tensor(a_np, dtype=torch.float32, requires_grad=True)
+    a_milligrad = Tensor(a_np)
+
+    std_torch = a_torch.std(dim=-1, unbiased=False)
+
+    std_milligrad = a_milligrad.std(axis=-1)
+
+    np.testing.assert_allclose(
+        std_milligrad.data, std_torch.detach().numpy(),
+        err_msg="Forward pass mismatch", atol=1e-6
+    )
+
+    std_torch.backward(torch.ones_like(std_torch))
+    grad_pytorch = a_torch.grad.numpy()
+
+    std_milligrad.backward()
+    grad_milligrad = a_milligrad.grad
+
+    np.testing.assert_allclose(
+        grad_milligrad.squeeze(), grad_pytorch,
+        err_msg="Backward pass gradient mismatch", atol=1e-6
+    )
+
+    # Test case 2: Standard deviation over the entire data (global std)
+    b_np = np.random.randn(2, 3, 4)
+    b_torch = torch.tensor(b_np, dtype=torch.float32, requires_grad=True)
+    b_milligrad = Tensor(b_np)
+
+    std_torch = b_torch.std(dim=None, unbiased=False)
+    std_milligrad = b_milligrad.std(axis=None)
+
+    np.testing.assert_allclose(
+        std_milligrad.data, std_torch.detach().numpy(),
+        err_msg="Forward pass mismatch", atol=1e-6
+    )
+
+    std_torch.backward(torch.ones_like(std_torch))
+    grad_pytorch = b_torch.grad.numpy()
+
+    std_milligrad.backward()
+    grad_milligrad = b_milligrad.grad
+
+    np.testing.assert_allclose(
+        grad_milligrad, grad_pytorch,
+        err_msg="Backward pass gradient mismatch", atol=1e-6
+    )
+    
+    
     
 def test_softmax():
     a_np = np.random.randn(3, 4)
@@ -162,7 +216,7 @@ def test_perceptron_grad():
     x, y = Tensor(x_np), Tensor(y_np)
     w, b = Tensor(w_np), Tensor(b_np)
     y_hat = x @ w + b
-    l = ((y - y_hat)**2).sum().sum()
+    l = ((y - y_hat)**2).sum()
     l.backward()
     
     np.testing.assert_allclose(l.data, l_np)
@@ -171,5 +225,8 @@ def test_perceptron_grad():
     
     
 if __name__ == "__main__":
+    test_sum()
     test_perceptron()
     test_perceptron_grad()
+    test_mean()
+    test_std()
