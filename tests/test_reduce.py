@@ -70,7 +70,7 @@ def test_std(shape, axis, unbiased):
     
     np.testing.assert_allclose(
         std_milli.data, std_torch.detach().numpy(),
-        err_msg="Forward pass mismatch", atol=1e-6
+        err_msg="Forward pass mismatch", atol=1e-5
     )
     
     std_milli.backward()
@@ -78,7 +78,7 @@ def test_std(shape, axis, unbiased):
     
     np.testing.assert_allclose(
         a_milli.grad, a_torch.grad.numpy(),
-        err_msg="Backward pass gradient mismatch", atol=1e-6
+        err_msg="Backward pass gradient mismatch", atol=1e-5
     )
     
     

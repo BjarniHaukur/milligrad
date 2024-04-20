@@ -98,17 +98,15 @@ class Tensor:
     # the @ operator is matrix multiplication
     def __matmul__(self, other: Tensor) -> Tensor:
         a, b = self.data, other.data
-        a_vec, b_vec = a.ndim == 1, b.ndim == 1
-        
-        if a_vec: a = a[None] # treat a as a row vector
-        if b_vec: b = b[..., None] # treat b as a column vector
+        if a_vec := a.ndim == 1: a = a[None] # treat a as a row vector
+        if b_vec := b.ndim == 1: b = b[..., None] # treat b as a column vector
         
         # add unary dimensions so that a and b have the same number of dimensions, summed away later
         a_diff, b_diff = tuple(range(b.ndim - a.ndim)), tuple(range(a.ndim - b.ndim))
         a = a.reshape((1,) * len(a_diff) + a.shape)
         b = b.reshape((1,) * len(b_diff) + b.shape)
-        c = a @ b
         
+        c = a @ b # we use the shape of this later to figure out the gradient
         out = Tensor(c.squeeze() if a_vec or b_vec else c, (self, other), "@")
         
         def _backward():
