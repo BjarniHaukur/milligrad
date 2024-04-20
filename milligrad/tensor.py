@@ -220,14 +220,14 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def std(self, axis:int=-1)->Tensor:
+    def std(self, axis:int=-1, unbiased:bool=False)->Tensor:
         N = self.data.size if axis is None else self.data.shape[axis]
         mean = self.data.mean(axis, keepdims=True)
-        std_dev = np.sqrt(((self.data - mean)**2).mean(axis, keepdims=True))
-        out = Tensor(std_dev.squeeze(), (self,), "std") # squeeze to remove the axis
+        std_dev = np.sqrt(((self.data - mean)**2).sum(axis, keepdims=True) / (N - unbiased))
+        out = Tensor(std_dev.squeeze(), (self,), "std")
         
         def _backward():
-            self.grad += broadcast_to(out.grad, self.shape) * (self.data - mean) / (N * std_dev)
+            self.grad += broadcast_to(out.grad, self.shape) * (self.data - mean) / ((N - unbiased) * std_dev)
             
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -262,8 +262,8 @@ class Tensor:
         return out
     
     # same with softmax but it would introduce numerical instability 
-    def softmax(self, axis:int=-1)->Tensor:
-        shifted_exp = np.exp(self.data - np.max(self.data, axis=axis, keepdims=True)) # numerical stability
+    def softmax(self)->Tensor:
+        shifted_exp = np.exp(self.data - np.max(self.data, axis=-1, keepdims=True)) # numerical stability
         out = Tensor(shifted_exp / shifted_exp.sum(axis=-1, keepdims=True), (self,), "softmax")
         
         def _backward():            
@@ -279,13 +279,13 @@ class Tensor:
         return out
     
     # can be replaced with .softmax().log() but this is more efficient and numerically stable
-    def log_softmax(self, axis:int=-1)->Tensor:
-        shifted = self.data - np.max(self.data, axis=axis, keepdims=True)
-        log_probs = shifted - np.log(np.exp(shifted).sum(axis=axis, keepdims=True))
+    def log_softmax(self)->Tensor:
+        shifted = self.data - np.max(self.data, axis=-1, keepdims=True)
+        log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
         out = Tensor(log_probs, (self,), "log_softmax")
         
         def _backward():
-            self.grad += out.grad - np.exp(log_probs) * out.grad.sum(axis=axis, keepdims=True)
+            self.grad += out.grad - np.exp(log_probs) * out.grad.sum(axis=-1, keepdims=True)
             
         if not Tensor._no_grad: self._backward = _backward
         return out
