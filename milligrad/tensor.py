@@ -44,10 +44,7 @@ class Tensor:
         self.grad = np.zeros_like(data)
         
         self._backward = lambda: None # a closure, added by operators
-        # "ordered set" (dict keys are ordered in python 3.7+)
-        # reversed to backpropagate in the right order
-        # required to avoid circular references (e.g. a + a)
-        self._prev = dict.fromkeys(reversed(_children)).keys() 
+        self._prev = dict.fromkeys(reversed(_children)).keys() # "ordered set" of children
         self._grad_fn = _grad_fn # nice to have
         
     @classmethod
@@ -99,13 +96,81 @@ class Tensor:
         return out
     
     # the @ operator is matrix multiplication
-    def __matmul__(self, other:Tensor)->Tensor:
-        out = Tensor(self.data @ other.data, (self, other), "@")
+    def __matmul__(self, other: Tensor) -> Tensor:
+        a, b = self.data, other.data
+        a_vec, b_vec = a.ndim == 1, b.ndim == 1
+        
+        if a_vec: a = a[None] # treat a as a row vector
+        if b_vec: b = b[..., None] # treat b as a column vector
+        
+        # add unary dimensions so that a and b have the same number of dimensions, summed away later
+        a_diff, b_diff = tuple(range(b.ndim - a.ndim)), tuple(range(a.ndim - b.ndim))
+        a = a.reshape((1,) * len(a_diff) + a.shape)
+        b = b.reshape((1,) * len(b_diff) + b.shape)
+        c = a @ b
+        
+        out = Tensor(c.squeeze() if a_vec or b_vec else c, (self, other), "@")
         
         def _backward():
-            self.grad += out.grad @ other.data.T
-            other.grad += self.data.T @ out.grad
-            
+            dc = out.grad.reshape(c.shape) # adds back the unary dimensions
+            self.grad += (dc @ np.moveaxis(b, -1, -2)).sum(a_diff).sum((0,) if a_vec else ())
+            other.grad += (np.moveaxis(a, -1, -2) @ dc).sum(b_diff).sum((-1,) if b_vec else ())
+        
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    def conv1d(self, kernels:Tensor, padding:int=0)->Tensor:
+        assert self.data.ndim == 3, f"Input tensor must be batched 2d i.e. 3d but got {self.data.ndim=}"
+        assert kernels.data.ndim == 3, f"Expected (c_in, kernel_size, c_out) but got {kernels.shape=} instead"
+        assert self.shape[1] == kernels.shape[0], f"Input channel mismatch"
+        
+        B, C_in, W_in = self.shape
+        C_in, K, C_out = kernels.shape
+        W_out = W_in - K + 1 + 2*padding
+    
+        pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)
+        out = np.zeros((B, C_out, W_out))
+        for i in range(W_out): # a convolution is simply a matrix product of each segment of size (B, C_in, K) in the input and the kernels
+            out[:, :, i] = np.einsum('bck,ckx->bx', pad[:, :, i:i+K], kernels.data) # sum over c_in and k
+        
+        out = Tensor(out, (self, kernels), "conv1d")
+        
+        def _backward():
+            dpad = np.zeros_like(pad)
+            dkernels = np.zeros_like(kernels.data)
+            for i in range(W_out):
+                # the gradient of each slice of the input is simply the product of the kernel and the output gradient (chain rule)
+                dpad[:, :, i:i+K] += np.einsum('ckx,bx->bck', kernels.data, out.grad[:, :, i])
+                # the gradient of the kernel is the sum of prodcuts of each input slice with the output gradient (chain rule)
+                dkernels += np.einsum('bck,bx->ckx', pad[:, :, i:i+K], out.grad[:, :, i])
+        
+            self.grad += dpad[:, :, padding:W_in+padding] # remove padding
+            kernels.grad += dkernels
+
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    def conv2d(self, kernels:Tensor, padding:tuple[int,int]=(0,0))->Tensor:
+        assert self.data.ndim == 4, f"Input tensor must be batched 3d i.e. 4d but got {self.data.ndim=}"
+        assert kernels.data.ndim == 4, f"Expected (c_in, k1, k2, c_out) but got {kernels.shape=}"
+        assert self.shape[1] == kernels.shape[0], f"Input channel mismatch"
+        
+        B, C_in, H_in, W_in = self.shape
+        C_in, K1, K2, C_out = kernels.shape
+        H_out = H_in - K1 + 1 + 2*padding[0]
+        W_out = W_in - K2 + 1 + 2*padding[1]
+        
+        pad = np.pad(self.data, ((0, 0), (0, 0), (padding[0], padding[0]), (padding[1], padding[1])), mode='constant', constant_values=0)
+        out = np.zeros((B, C_out, H_out, W_out))
+        for i in range(H_out):
+            for j in range(W_out):
+                out[:, :, i, j] = np.einsum('bcij,cijx->xij', pad[:, :, i:i+K1, j:j+K2], kernels.data)
+        
+        out = Tensor(out, (self, kernels), "conv2d")
+        
+        def _backward():
+            pass
+        
         if not Tensor._no_grad: self._backward = _backward
         return out
     
@@ -164,70 +229,6 @@ class Tensor:
         def _backward():
             self.grad += broadcast_to(out.grad, self.shape) * (self.data - mean) / (N * std_dev)
             
-        if not Tensor._no_grad: self._backward = _backward
-        return out
-    
-    def max(self, axis:int=-1)->Tensor:
-        out = Tensor(self.data.max(axis=axis, keepdims=True), (self,), "max")
-        
-        def _backward():
-            self.grad += (self.data == out.data) * out.grad
-            
-        if not Tensor._no_grad: self._backward = _backward
-        return out
-    
-    def conv1d(self, kernels:Tensor, padding:int=0)->Tensor:
-        assert self.data.ndim == 3, f"Input tensor must be batched 2d i.e. 3d but got {self.data.ndim=}"
-        assert kernels.data.ndim == 3, f"Expected (c_in, kernel_size, c_out) but got {kernels.shape=} instead"
-        assert self.shape[1] == kernels.shape[0], f"Input channel mismatch"
-        
-        B, C_in, W_in = self.shape
-        C_in, K, C_out = kernels.shape
-        W_out = W_in - K + 1 + 2*padding
-    
-        pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)
-        out = np.zeros((B, C_out, W_out))
-        for i in range(W_out): # a convolution is simply a matrix product of each segment of size (B, C_in, K) in the input and the kernels
-            out[:, :, i] = np.einsum('bck,ckx->bx', pad[:, :, i:i+K], kernels.data) # sum over c_in and k
-        
-        out = Tensor(out, (self, kernels), "conv1d")
-        
-        def _backward():
-            dpad = np.zeros_like(pad)
-            dkernels = np.zeros_like(kernels.data)
-            for i in range(W_out):
-                # the gradient of each slice of the input is simply the product of the kernel and the output gradient (chain rule)
-                dpad[:, :, i:i+K] += np.einsum('ckx,bx->bck', kernels.data, out.grad[:, :, i])
-                # the gradient of the kernel is the sum of prodcuts of each input slice with the output gradient (chain rule)
-                dkernels += np.einsum('bck,bx->ckx', pad[:, :, i:i+K], out.grad[:, :, i])
-        
-            self.grad += dpad[:, :, padding:W_in+padding] # remove padding
-            kernels.grad += dkernels
-
-        if not Tensor._no_grad: self._backward = _backward
-        return out
-    
-    def conv2d(self, kernels:Tensor, padding:tuple[int,int]=(0,0))->Tensor:
-        assert self.data.ndim == 4, f"Input tensor must be batched 3d i.e. 4d but got {self.data.ndim=}"
-        assert kernels.data.ndim == 4, f"Expected (c_in, k1, k2, c_out) but got {kernels.shape=}"
-        assert self.shape[1] == kernels.shape[0], f"Input channel mismatch"
-        
-        B, C_in, H_in, W_in = self.shape
-        C_in, K1, K2, C_out = kernels.shape
-        H_out = H_in - K1 + 1 + 2*padding[0]
-        W_out = W_in - K2 + 1 + 2*padding[1]
-        
-        pad = np.pad(self.data, ((0, 0), (0, 0), (padding[0], padding[0]), (padding[1], padding[1])), mode='constant', constant_values=0)
-        out = np.zeros((B, C_out, H_out, W_out))
-        for i in range(H_out):
-            for j in range(W_out):
-                out[:, :, i, j] = np.einsum('bcij,cijx->xij', pad[:, :, i:i+K1, j:j+K2], kernels.data)
-        
-        out = Tensor(out, (self, kernels), "conv2d")
-        
-        def _backward():
-            pass
-        
         if not Tensor._no_grad: self._backward = _backward
         return out
     
@@ -322,9 +323,6 @@ class Tensor:
     
     def mean(self, axis:int=None)->Tensor:
         return self.sum(axis) / (self.data.size if axis is None else self.data.shape[axis])
-    
-    def min(self, axis:int=-1)->Tensor:
-        return -(-self).max(axis)
     
     def __repr__(self):
         data_repr = self.data.__repr__().removeprefix("array")[1:-1] # drop array and parentheses
