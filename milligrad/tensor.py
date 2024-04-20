@@ -27,8 +27,7 @@ def broadcast_to(grad:np.ndarray|np.float32, shape:tuple[int])->np.ndarray:
         return np.broadcast_to(grad.reshape(new_shape), shape)
     if grad.ndim > len(shape):
         axis = tuple(i for i, s in enumerate(grad.shape) if s not in shape)
-        return grad.sum(axis=axis)
-    
+        return grad.sum(axis=axis) 
     return grad
     
 class Tensor:

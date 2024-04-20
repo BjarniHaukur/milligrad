@@ -1,4 +1,3 @@
-
 from abc import ABC, abstractmethod
 
 from milligrad.tensor import Tensor
@@ -65,7 +64,7 @@ class RMSProp(Optimizer):
             
 # Adam is essentially AdaGrad and RMSProp with bias correction
 class Adam(Optimizer):
-    def __init__(self, params: list[Tensor], lr: float = 0.001, beta1: float = 0.9, beta2: float = 0.999, epsilon: float = 1e-8):
+    def __init__(self, params:list[Tensor], lr:float=0.001, beta1:float=0.9, beta2:float=0.999, epsilon:float=1e-8):
         super().__init__(params)
         self.lr = lr
         self.beta1 = beta1
