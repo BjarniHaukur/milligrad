@@ -83,5 +83,5 @@ def test_std(shape, axis, unbiased):
     
     
 if __name__ == "__main__":
-    test_std((2, 3, 4), -1, True)
+    test_mean((2, 3, 4), -1)
     

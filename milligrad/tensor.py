@@ -41,7 +41,7 @@ class Tensor:
         # bails out here if data is e.g. Tensor ^^^
         assert isinstance(data, (np.ndarray, list, int, float)), f"Invalid data type {type(data)}"
         self.data = np.array(data)
-        self.grad = np.zeros_like(data)
+        self.grad = np.zeros_like(data, dtype=np.float32)
         
         self._backward = lambda: None # a closure, added by operators
         self._prev = dict.fromkeys(reversed(_children)).keys() # "ordered set" of children
@@ -95,13 +95,26 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    # the @ operator is matrix multiplication
-    def __matmul__(self, other: Tensor) -> Tensor:
-        a, b = self.data, other.data
-        if a_vec := a.ndim == 1: a = a[None] # treat a as a row vector
-        if b_vec := b.ndim == 1: b = b[..., None] # treat b as a column vector
+    def __truediv__(self, other:Tensor|int|float)->Tensor:
+        other = other if isinstance(other, Tensor) else Tensor(other)
+        out = Tensor(self.data / other.data, (self, other), "/")
         
-        # add unary dimensions so that a and b have the same number of dimensions, summed away later
+        def _backward():
+            self.grad += broadcast_to(out.grad / other.data, self.shape)
+            other.grad += broadcast_to(-out.grad * self.data / other.data**2.0, other.shape)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+    
+    # the @ operator is matrix multiplication
+    def __matmul__(self, other:Tensor)->Tensor:
+        a, b = self.data, other.data
+        
+        a_vec, b_vec = a.ndim == 1, b.ndim == 1
+        if a_vec: a = a[None] # treat a vector as a row matrix
+        if b_vec: b = b[..., None] # treat b vector as a column matrix
+        
+        # add unary dimensions so that a and b have the same dimensionality, summed away later
         a_diff, b_diff = tuple(range(b.ndim - a.ndim)), tuple(range(a.ndim - b.ndim))
         a = a.reshape((1,) * len(a_diff) + a.shape)
         b = b.reshape((1,) * len(b_diff) + b.shape)
@@ -110,7 +123,7 @@ class Tensor:
         out = Tensor(c.squeeze() if a_vec or b_vec else c, (self, other), "@")
         
         def _backward():
-            dc = out.grad.reshape(c.shape) # adds back the unary dimensions
+            dc = out.grad.reshape(c.shape) # adds back the unary dimensions if present
             self.grad += (dc @ np.moveaxis(b, -1, -2)).sum(a_diff).sum((0,) if a_vec else ())
             other.grad += (np.moveaxis(a, -1, -2) @ dc).sum(b_diff).sum((-1,) if b_vec else ())
         
@@ -153,21 +166,30 @@ class Tensor:
         assert kernels.data.ndim == 4, f"Expected (c_in, k1, k2, c_out) but got {kernels.shape=}"
         assert self.shape[1] == kernels.shape[0], f"Input channel mismatch"
         
+        p1, p2 = padding
         B, C_in, H_in, W_in = self.shape
         C_in, K1, K2, C_out = kernels.shape
         H_out = H_in - K1 + 1 + 2*padding[0]
         W_out = W_in - K2 + 1 + 2*padding[1]
         
-        pad = np.pad(self.data, ((0, 0), (0, 0), (padding[0], padding[0]), (padding[1], padding[1])), mode='constant', constant_values=0)
-        out = np.zeros((B, C_out, H_out, W_out))
+        pad = np.pad(self.data, ((0, 0), (0, 0), (p1, p1), (p2, p2)), mode='constant', constant_values=0)
+        out = np.zeros((B, C_out, W_out, H_out))
         for i in range(H_out):
             for j in range(W_out):
-                out[:, :, i, j] = np.einsum('bcij,cijx->xij', pad[:, :, i:i+K1, j:j+K2], kernels.data)
+                out[:, :, i, j] = np.einsum('bcij,cijx->bx', pad[:, :, i:i+K1, j:j+K2], kernels.data)
         
         out = Tensor(out, (self, kernels), "conv2d")
         
         def _backward():
-            pass
+            dpad = np.zeros_like(pad)
+            dkernels = np.zeros_like(kernels.data)
+            for i in range(H_out):
+                for j in range(W_out):
+                    dpad[:, :, i:i+K1, j:j+K2] += np.einsum('cijx,bx->bcij', kernels.data, out.grad[:, :, i, j])
+                    dkernels += np.einsum('bcij,bx->cijx', pad[:, :, i:i+K1, j:j+K2], out.grad[:, :, i, j])
+                    
+            self.grad += dpad[:, :, p1:W_in+p1, p2:H_in+p2]
+            kernels.grad += dkernels
         
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -317,7 +339,6 @@ class Tensor:
     def __radd__(self, other:int|float)->Tensor: return self + other
     def __rsub__(self, other:int|float)->Tensor: return other + (-self)
     def __rmul__(self, other:int|float)->Tensor: return self * other
-    def __truediv__(self, other:int|float|Tensor)->Tensor: return self * other**-1
     
     def mean(self, axis:int=None)->Tensor:
         return self.sum(axis) / (self.data.size if axis is None else self.data.shape[axis])
