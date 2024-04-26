@@ -11,6 +11,7 @@ import numpy as np
     (1, 1, 1, 1, 1, 0),
     (1, 1, 1, 1, 1, 1),
     (16, 100, 3, 4, 3, 2),
+    (16, 3, 1, 4, 3, 0),
     (16, 5, 3, 9, 5, 0),
     (16, 14, 3, 10, 7, 100),
 ])  
@@ -65,4 +66,5 @@ def test_conv2d(batch_size, height, width, c_in, c_out, kernel_size, padding):
     
     
 if __name__ == "__main__":
-    test_conv2d(32, 28, 28, 3, 4, (5, 5), (1, 1))
+    test_conv1d(16, 3, 1, 4, 3, 0)
+    test_conv1d(16, 5, 3, 9, 5, 0)

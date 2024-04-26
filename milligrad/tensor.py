@@ -140,24 +140,17 @@ class Tensor:
         W_out = W_in - K + 1 + 2*padding
     
         pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)
-        out = np.zeros((B, C_out, W_out))
-        for i in range(W_out): # a convolution is simply a matrix product of each segment of size (B, C_in, K) in the input and the kernels
-            out[:, :, i] = np.einsum('bck,ckx->bx', pad[:, :, i:i+K], kernels.data) # sum over c_in and k
-        
-        out = Tensor(out, (self, kernels), "conv1d")
+        strided = np.lib.stride_tricks.as_strided(pad,
+            shape=(B, C_in, W_out, K), # adds new dimension (W_out), contains each segment of length K in the padded input 
+            strides=pad.strides + (pad.strides[-1],) # configures array traversal: adding a stride to the last dimension to slide the window
+        )
+        out = Tensor(np.einsum("biwk,iko->bow", strided, kernels.data, optimize=True), (self, kernels), "conv1d")
         
         def _backward():
-            dpad = np.zeros_like(pad)
-            dkernels = np.zeros_like(kernels.data)
-            for i in range(W_out):
-                # the gradient of each slice of the input is simply the product of the kernel and the output gradient (chain rule)
-                dpad[:, :, i:i+K] += np.einsum('ckx,bx->bck', kernels.data, out.grad[:, :, i])
-                # the gradient of the kernel is the sum of prodcuts of each input slice with the output gradient (chain rule)
-                dkernels += np.einsum('bck,bx->ckx', pad[:, :, i:i+K], out.grad[:, :, i])
-        
-            self.grad += dpad[:, :, padding:W_in+padding] # remove padding
-            kernels.grad += dkernels
-
+            input_grad = np.einsum("bow,iko->biw", out.grad, kernels.data, optimize=True)
+            self.grad += input_grad[..., padding:W_in+padding] if W_out >= W_in else input_grad
+            kernels.grad += np.einsum("biwk,bow->iko", strided, out.grad, optimize=True)
+            
         if not Tensor._no_grad: self._backward = _backward
         return out
     
