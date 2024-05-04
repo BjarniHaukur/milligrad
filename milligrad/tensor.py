@@ -161,15 +161,15 @@ class Tensor:
         
         p1, p2 = padding
         B, C_in, H_in, W_in = self.shape
-        C_in, K1, K2, C_out = kernels.shape
-        H_out = H_in - K1 + 1 + 2*padding[0]
-        W_out = W_in - K2 + 1 + 2*padding[1]
+        C_in, K_H, K_W, C_out = kernels.shape
+        H_out = H_in - K_H + 1 + 2*padding[0]
+        W_out = W_in - K_W + 1 + 2*padding[1]
         
         pad = np.pad(self.data, ((0, 0), (0, 0), (p1, p1), (p2, p2)), mode='constant', constant_values=0)
         out = np.zeros((B, C_out, W_out, H_out))
         for i in range(H_out):
             for j in range(W_out):
-                out[:, :, i, j] = np.einsum('bcij,cijx->bx', pad[:, :, i:i+K1, j:j+K2], kernels.data)
+                out[:, :, i, j] = np.einsum('bcij,cijx->bx', pad[:, :, i:i+K_H, j:j+K_W], kernels.data)
         
         out = Tensor(out, (self, kernels), "conv2d")
         
@@ -178,8 +178,8 @@ class Tensor:
             dkernels = np.zeros_like(kernels.data)
             for i in range(H_out):
                 for j in range(W_out):
-                    dpad[:, :, i:i+K1, j:j+K2] += np.einsum('cijx,bx->bcij', kernels.data, out.grad[:, :, i, j])
-                    dkernels += np.einsum('bcij,bx->cijx', pad[:, :, i:i+K1, j:j+K2], out.grad[:, :, i, j])
+                    dpad[:, :, i:i+K_H, j:j+K_W] += np.einsum('cijx,bx->bcij', kernels.data, out.grad[:, :, i, j])
+                    dkernels += np.einsum('bcij,bx->cijx', pad[:, :, i:i+K_H, j:j+K_W], out.grad[:, :, i, j])
                     
             self.grad += dpad[:, :, p1:W_in+p1, p2:H_in+p2]
             kernels.grad += dkernels
@@ -187,6 +187,54 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
+    def maxpool1d(self, kernel_size:int=2)->Tensor:
+        assert self.data.ndim == 3, f"Input tensor must be batched 2d i.e. 3d but got {self.data.ndim=}"
+        assert self.shape[-1] % kernel_size == 0 and kernel_size > 0, "The length of the sequence must be divisible by the kernel size" 
+        
+        B, C_in, W_in = self.shape
+        W_out = W_in // kernel_size
+    
+        strided = np.lib.stride_tricks.as_strided(self.data,
+            shape=(B, C_in, W_out, kernel_size), # adds new dimension (W_out), contains each segment of length K in the padded input 
+            strides=self.data.strides + (self.data.strides[-1],) # configures array traversal: adding a stride to the last dimension to slide the window
+        )
+        
+        max_indices = strided.argmax(axis=-1)
+        out = Tensor(strided.max(axis=-1), (self,), "maxpool1d")
+        
+        def _backward():
+            strided_grad = np.zeros_like(strided) # zeros except where the max values were
+            np.put_along_axis(strided_grad, max_indices[..., None], out.grad[..., None], axis=-1)
+            self.grad += strided_grad.reshape(B, C_in, W_in)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+        
+    def maxpool2d(self, kernel_size:tuple[int,int]=(2,2)):
+        assert self.data.ndim == 4, f"Input tensor must be batched 3d i.e. 4d but got {self.data.ndim=}"
+        assert self.shape[-2] % kernel_size[0] and self.shape[-1] % kernel_size[1], "The width and height of the image must be divisible by the kernel dimensions"
+        
+        B, C_in, H_in, W_in = self.shape
+        K_H, K_W = kernel_size
+        H_out, W_out = H_in // K_H, W_in // K_W
+        
+        *orig_strides, s2, s3 = self.data.strides
+        strided = np.lib.stride_tricks.as_strided(self.data,
+            shape=(B, C_in, H_out, W_out, K_H, K_W),
+            strides=(*orig_strides, s2, s3, s2, s3) # configures array traversal: twice s2 and s3 to select a 2D sliding window
+        ).reshape(B, C_in, H_out, W_out, K_H*K_W)
+        
+        max_indices = self.data.argmax(axis=-1)
+        out = Tensor(self.data.max(axis=-1), (self,), "maxpool2d")
+        
+        def _backward():
+            strided_grad = np.zeros_like(strided)
+            np.put_along_axis(strided_grad, max_indices[..., None], out.grad[..., None], axis=-1)
+            self.grad += strided_grad.reshape(B, C_in, H_in, W_in)
+            
+        if not Tensor._no_grad: self._backward = _backward
+        return out
+        
     def __neg__(self)->Tensor:
         out = Tensor(-self.data, (self,), "-")
         
@@ -319,7 +367,7 @@ class Tensor:
         out = Tensor(self.data.reshape(*shape), (self,), "reshape")
         
         def _backward():
-            self.grad += out.grad.reshape(self.data.shape)
+            self.grad += out.grad.reshape(self.shape)
             
         if not Tensor._no_grad: self._backward = _backward
         return out
