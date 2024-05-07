@@ -130,30 +130,41 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def conv1d(self, kernels:Tensor, padding:int=0)->Tensor:
-        assert self.data.ndim == 3, f"Input tensor must be batched 2d i.e. 3d but got {self.data.ndim=}"
-        assert kernels.data.ndim == 3, f"Expected (c_in, kernel_size, c_out) but got {kernels.shape=} instead"
-        assert self.shape[1] == kernels.shape[0], f"Input channel mismatch"
-        
-        B, C_in, W_in = self.shape
-        C_in, K, C_out = kernels.shape
-        W_out = W_in - K + 1 + 2*padding
-    
-        pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)
+    def conv1d(self, kernels: Tensor, padding: int = 0) -> Tensor:
+        B, C_in, W_in = self.shape  # Batch size, number of input channels, input width
+        _, K, C_out = kernels.shape  # Number of input channels (again), kernel size, number of output channels
+        W_out = W_in - K + 1 + 2 * padding  # Output width calculation
+
+        pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)  # Pad input
         strided = np.lib.stride_tricks.as_strided(pad,
-            shape=(B, C_in, W_out, K), # adds new dimension (W_out), contains each segment of length K in the padded input 
-            strides=pad.strides + (pad.strides[-1],) # configures array traversal: adding a stride to the last dimension to slide the window
-        )
-        out = Tensor(np.einsum("biwk,iko->bow", strided, kernels.data, optimize=True), (self, kernels), "conv1d")
-        
+            shape=(B, C_in, W_out, K),  # Shape of the result of sliding the kernel over input
+            strides=pad.strides[:2] + (pad.strides[2], pad.strides[2])  # Strides for the sliding window
+        )  
+
+        out = Tensor(np.einsum("biwk,iko->bow", strided, kernels.data, optimize=True), (self, kernels), "conv1d")  # Convolution operation
+
         def _backward():
-            input_grad = np.einsum("bow,iko->biw", out.grad, kernels.data, optimize=True)
-            self.grad += input_grad[..., padding:W_in+padding] if W_out >= W_in else input_grad
-            kernels.grad += np.einsum("biwk,bow->iko", strided, out.grad, optimize=True)
-            
+            kernels.grad += np.einsum("biwk,bow->iko", strided, out.grad, optimize=True)  # Convolution operation to update kernels' gradients
+
+            flipped_kernels = np.flip(kernels.data, axis=1)  # Flip kernels for the convolution in the backward pass
+            padded_grad = np.pad(out.grad, ((0, 0), (0, 0), (K - 1, K - 1)), mode='constant', constant_values=0)  # Pad gradients
+
+            # Use strided view to compute the full gradient w.r.t input
+            grad_shape = (B, C_in, W_in + 2 * padding, K)
+            grad_strides = padded_grad.strides[:2] + (padded_grad.strides[2], padded_grad.strides[2])
+            strided_grad = np.lib.stride_tricks.as_strided(
+                padded_grad,
+                shape=grad_shape,
+                strides=grad_strides
+            )
+
+            # Sum over the kernel dimension to get the contribution to the input gradient
+            input_grad = np.einsum('biwk,iko->biw', strided_grad, flipped_kernels, optimize=True)  # Convolution to compute input gradients
+            self.grad += input_grad[..., padding:W_in + padding]  # Adjust for the original padding
+
         if not Tensor._no_grad: self._backward = _backward
         return out
-    
+        
     def conv2d(self, kernels:Tensor, padding:tuple[int,int]=(0,0))->Tensor:
         assert self.data.ndim == 4, f"Input tensor must be batched 3d i.e. 4d but got {self.data.ndim=}"
         assert kernels.data.ndim == 4, f"Expected (c_in, k1, k2, c_out) but got {kernels.shape=}"
@@ -186,7 +197,7 @@ class Tensor:
         
         if not Tensor._no_grad: self._backward = _backward
         return out
-    
+
     def maxpool1d(self, kernel_size:int=2)->Tensor:
         assert self.data.ndim == 3, f"Input tensor must be batched 2d i.e. 3d but got {self.data.ndim=}"
         assert self.shape[-1] % kernel_size == 0 and kernel_size > 0, "The length of the sequence must be divisible by the kernel size" 
