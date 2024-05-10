@@ -5,13 +5,12 @@ import pytest
 import torch
 import numpy as np
 
-mlp_shapes = [
+
+@pytest.mark.parametrize("w1_shape, w2_shape", [
     ((100, 50), (50, 10)),
     ((10, 5), (5, 1)),
     ((768, 512), (512, 2)),
-]
-
-@pytest.mark.parametrize("w1_shape, w2_shape", mlp_shapes)
+])
 def test_perceptron(w1_shape, w2_shape):
     x_milli, x_torch = create_randn_pair((16, w1_shape[0]))
     y_milli, y_torch = create_randn_pair((16, w2_shape[1]))
@@ -68,5 +67,7 @@ def test_perceptron(w1_shape, w2_shape):
         b2_milli.grad, b2_torch.grad.numpy(),
         err_msg="Backward pass b2 gradient mismatch", atol=1e-6
     )
+
+
     
     

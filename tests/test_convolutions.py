@@ -119,5 +119,6 @@ def test_maxpool2d(batch_size, channels, height, width, kernel_size):
     )
     
 if __name__ == "__main__":
+    test_conv1d(16, 100, 3, 4, 3, 2)
     test_maxpool2d(1, 1, 4, 4, (2, 2))
     test_maxpool2d(32, 3, 32, 32, (16, 16))

@@ -130,7 +130,7 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def conv1d(self, kernels: Tensor, padding: int = 0) -> Tensor:
+    def conv1d(self, kernels:Tensor, padding:int=0)->Tensor:
         B, C_in, W_in = self.shape  # Batch size, number of input channels, input width
         _, K, C_out = kernels.shape  # Number of input channels (again), kernel size, number of output channels
 
@@ -154,17 +154,17 @@ class Tensor:
 
             Bs, Cs, Ws = padded_grad.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
             strided_grad = np.lib.stride_tricks.as_strided(padded_grad,
-                shape=(B, C_in, W_in + 2 * padding, K),  # Create another 4D view, but this time of the padded gradients, to "unroll" the kernel's influence over the input.
+                shape=(B, C_out, W_in + 2 * padding, K),  # Create another 4D view, but this time of the padded gradients, to "unroll" the kernel's influence over the input.
                 strides=(Bs, Cs, Ws, Ws)  # Configure the strides to slide the kernel window over the gradients, moving K elements at a time along the spatial dimension.
             )
 
-            input_grad = np.einsum('biwk,iko->biw', strided_grad, flipped_kernels, optimize=True)  # Convolution to compute input gradients
+            input_grad = np.einsum('bowk,iko->biw', strided_grad, flipped_kernels, optimize=True)  # Convolution to compute input gradients
             self.grad += input_grad[..., padding:W_in + padding]  # Adjust for the original padding
 
         if not Tensor._no_grad: self._backward = _backward
         return out
         
-    def conv2d(self, kernels: Tensor, padding: tuple[int, int] = (0, 0)) -> Tensor:
+    def conv2d(self, kernels:Tensor, padding:tuple[int,int]=(0,0))->Tensor:
         p1, p2 = padding
         B, C_in, H_in, W_in = self.shape  # Batch size, number of input channels, input height, input width
         _, K_H, K_W, C_out = kernels.shape  # Number of input channels (again), kernel height, kernel width, number of output channels
@@ -224,7 +224,7 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
         
-    def maxpool2d(self, kernel_size:tuple[int,int]=(2,2)):
+    def maxpool2d(self, kernel_size:tuple[int,int]=(2,2))->Tensor:
         assert self.data.ndim == 4, f"Input tensor must be batched 3d i.e. 4d but got {self.data.ndim=}"
         assert self.shape[-2] % kernel_size[0] == 0 and self.shape[-1] % kernel_size[1] == 0, "The width and height of the image must be divisible by the kernel dimensions"
         
@@ -245,7 +245,7 @@ class Tensor:
             strided_grad = np.zeros_like(strided)
             np.put_along_axis(strided_grad, max_indices, out.grad[..., None], axis=-1)  # Propagate gradients to positions where the max was
             strided_grad = strided_grad.reshape(B, C, H_out, W_out, K_H, K_W)
-            self.grad += strided_grad.swapaxes(3,4).reshape(B, C, H_in, W_in)
+            self.grad += strided_grad.swapaxes(3,4).reshape(B, C, H_in, W_in)  # Swapaxes is crucial as it effectively reverses the striding operation when followed by the reshape operation
             
         if not Tensor._no_grad: self._backward = _backward
         return out
