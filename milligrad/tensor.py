@@ -133,68 +133,70 @@ class Tensor:
     def conv1d(self, kernels: Tensor, padding: int = 0) -> Tensor:
         B, C_in, W_in = self.shape  # Batch size, number of input channels, input width
         _, K, C_out = kernels.shape  # Number of input channels (again), kernel size, number of output channels
-        W_out = W_in - K + 1 + 2 * padding  # Output width calculation
 
-        pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)  # Pad input
+        W_out = W_in - K + 1 + 2 * padding 
+
+        pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)  # i.e. padding the third dimension with 'padding' amount of zeroes on both sides
+
+        Bs, Cs, Ws = pad.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
         strided = np.lib.stride_tricks.as_strided(pad,
-            shape=(B, C_in, W_out, K),  # Shape of the result of sliding the kernel over input
-            strides=pad.strides[:2] + (pad.strides[2], pad.strides[2])  # Strides for the sliding window
+            shape=(B, C_in, W_out, K),  # Create a 4D view of the padded input, where each slice along the third dimension is a segment of length K, effectively "unfolding" the kernel's spatial extent
+            strides=(Bs, Cs, Ws, Ws)  # Configure the strides to slide the kernel window over the input, moving K elements at a time along the spatial dimension
         )  
 
-        out = Tensor(np.einsum("biwk,iko->bow", strided, kernels.data, optimize=True), (self, kernels), "conv1d")  # Convolution operation
+        out = Tensor(np.einsum("biwk,iko->bow", strided, kernels.data, optimize=True), (self, kernels), "conv1d")
 
         def _backward():
             kernels.grad += np.einsum("biwk,bow->iko", strided, out.grad, optimize=True)  # Convolution operation to update kernels' gradients
 
-            flipped_kernels = np.flip(kernels.data, axis=1)  # Flip kernels for the convolution in the backward pass
-            padded_grad = np.pad(out.grad, ((0, 0), (0, 0), (K - 1, K - 1)), mode='constant', constant_values=0)  # Pad gradients
+            flipped_kernels = np.flip(kernels.data, axis=1)  # Flip the kernels along the spatial dimension for cross-correlation in the backward pass
+            padded_grad = np.pad(out.grad, ((0, 0), (0, 0), (K - 1, K - 1)), mode='constant', constant_values=0)  # Pad by K-1 to mimic how, due to initial padding, edge output pixels can be influenced by just a corner of the kernel
 
-            # Use strided view to compute the full gradient w.r.t input
-            grad_shape = (B, C_in, W_in + 2 * padding, K)
-            grad_strides = padded_grad.strides[:2] + (padded_grad.strides[2], padded_grad.strides[2])
-            strided_grad = np.lib.stride_tricks.as_strided(
-                padded_grad,
-                shape=grad_shape,
-                strides=grad_strides
+            Bs, Cs, Ws = padded_grad.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
+            strided_grad = np.lib.stride_tricks.as_strided(padded_grad,
+                shape=(B, C_in, W_in + 2 * padding, K),  # Create another 4D view, but this time of the padded gradients, to "unroll" the kernel's influence over the input.
+                strides=(Bs, Cs, Ws, Ws)  # Configure the strides to slide the kernel window over the gradients, moving K elements at a time along the spatial dimension.
             )
 
-            # Sum over the kernel dimension to get the contribution to the input gradient
             input_grad = np.einsum('biwk,iko->biw', strided_grad, flipped_kernels, optimize=True)  # Convolution to compute input gradients
             self.grad += input_grad[..., padding:W_in + padding]  # Adjust for the original padding
 
         if not Tensor._no_grad: self._backward = _backward
         return out
         
-    def conv2d(self, kernels:Tensor, padding:tuple[int,int]=(0,0))->Tensor:
-        assert self.data.ndim == 4, f"Input tensor must be batched 3d i.e. 4d but got {self.data.ndim=}"
-        assert kernels.data.ndim == 4, f"Expected (c_in, k1, k2, c_out) but got {kernels.shape=}"
-        assert self.shape[1] == kernels.shape[0], f"Input channel mismatch"
-        
+    def conv2d(self, kernels: Tensor, padding: tuple[int, int] = (0, 0)) -> Tensor:
         p1, p2 = padding
-        B, C_in, H_in, W_in = self.shape
-        C_in, K_H, K_W, C_out = kernels.shape
-        H_out = H_in - K_H + 1 + 2*padding[0]
-        W_out = W_in - K_W + 1 + 2*padding[1]
-        
-        pad = np.pad(self.data, ((0, 0), (0, 0), (p1, p1), (p2, p2)), mode='constant', constant_values=0)
-        out = np.zeros((B, C_out, W_out, H_out))
-        for i in range(H_out):
-            for j in range(W_out):
-                out[:, :, i, j] = np.einsum('bcij,cijx->bx', pad[:, :, i:i+K_H, j:j+K_W], kernels.data)
-        
-        out = Tensor(out, (self, kernels), "conv2d")
-        
+        B, C_in, H_in, W_in = self.shape  # Batch size, number of input channels, input height, input width
+        _, K_H, K_W, C_out = kernels.shape  # Number of input channels (again), kernel height, kernel width, number of output channels
+
+        H_out = H_in - K_H + 1 + 2 * p1
+        W_out = W_in - K_W + 1 + 2 * p2
+
+        pad = np.pad(self.data, ((0, 0), (0, 0), (p1, p1), (p2, p2)), mode='constant', constant_values=0)  # i.e. padding the third and fourth dimensions with 'padding' amount of zeroes on both sides
+
+        Bs, Cs, Hs, Ws = pad.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
+        strided = np.lib.stride_tricks.as_strided(pad,
+            shape=(B, C_in, H_out, W_out, K_H, K_W),  # Create a 6D view of the padded input, where each slice along the third and fourth dimensions is a segment of size K_H x K_W, effectively "unfolding" the kernel's spatial extent
+            strides=(Bs, Cs, Hs, Ws, Hs, Ws),  # Configure the strides to slide the kernel window over the input, moving K_H x K_W elements at a time along the spatial dimensions
+        )
+
+        out = Tensor(np.einsum('bchwij,cijk->bkhw', strided, kernels.data, optimize=True), (self, kernels), "conv2d")
+
         def _backward():
-            dpad = np.zeros_like(pad)
-            dkernels = np.zeros_like(kernels.data)
-            for i in range(H_out):
-                for j in range(W_out):
-                    dpad[:, :, i:i+K_H, j:j+K_W] += np.einsum('cijx,bx->bcij', kernels.data, out.grad[:, :, i, j])
-                    dkernels += np.einsum('bcij,bx->cijx', pad[:, :, i:i+K_H, j:j+K_W], out.grad[:, :, i, j])
-                    
-            self.grad += dpad[:, :, p1:W_in+p1, p2:H_in+p2]
-            kernels.grad += dkernels
-        
+            kernels.grad += np.einsum('bchwij,bkhw->cijk', strided, out.grad, optimize=True)  # Convolution operation to update kernels' gradients
+
+            flipped_kernels = np.flip(kernels.data, axis=(1, 2))  # Flip the kernels along the spatial dimensions for cross-correlation in the backward pass
+            padded_out_grad = np.pad(out.grad, ((0, 0), (0, 0), (K_H - 1, K_H - 1), (K_W - 1, K_W - 1)), mode='constant', constant_values=0)  # Pad by K_H-1 and K_W-1 to mimic how, due to initial padding, edge output pixels can be influenced by just a corner of the kernel
+
+            Bs, Cs, Hs, Ws = padded_out_grad.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
+            strided_grad = np.lib.stride_tricks.as_strided(padded_out_grad,
+                shape=(B, C_out, H_in + 2 * p1, W_in + 2 * p2, K_H, K_W),  # Create another 6D view, but this time of the padded gradients, to "unroll" the kernel's influence over the input.
+                strides=(Bs, Cs, Hs, Ws, Hs, Ws),  # Configure the strides to slide the kernel window over the gradients, moving K_H x K_W elements at a time along the spatial dimensions.
+            )
+
+            dpad = np.einsum('bkhwij,cijk->bchw', strided_grad, flipped_kernels, optimize=True)  # Convolution to compute input gradients
+            self.grad += dpad[:, :, p1:H_in + p1, p2:W_in + p2]  # Adjust for the original padding
+
         if not Tensor._no_grad: self._backward = _backward
         return out
 
@@ -204,44 +206,46 @@ class Tensor:
         
         B, C_in, W_in = self.shape
         W_out = W_in // kernel_size
-    
+
+        Bs, Cs, Ws = self.data.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
         strided = np.lib.stride_tricks.as_strided(self.data,
-            shape=(B, C_in, W_out, kernel_size), # adds new dimension (W_out), contains each segment of length K in the padded input 
-            strides=self.data.strides + (self.data.strides[-1],) # configures array traversal: adding a stride to the last dimension to slide the window
-        )
+            shape=(B, C_in, W_out, kernel_size),  # Generate a new view that groups input elements into blocks of 'kernel_size' along the width
+            strides=(Bs, Cs, Ws * kernel_size, Ws)  # Adjust strides to step over 'kernel_size' elements along the width for each sliding window position
+        )  
         
-        max_indices = strided.argmax(axis=-1)
+        max_indices = strided.argmax(axis=-1, keepdims=True) # for putting along axis later
         out = Tensor(strided.max(axis=-1), (self,), "maxpool1d")
         
         def _backward():
-            strided_grad = np.zeros_like(strided) # zeros except where the max values were
-            np.put_along_axis(strided_grad, max_indices[..., None], out.grad[..., None], axis=-1)
-            self.grad += strided_grad.reshape(B, C_in, W_in)
-            
+            strided_grad = np.zeros_like(strided)
+            np.put_along_axis(strided_grad, max_indices, out.grad[..., None], axis=-1)  # Propagate gradients to positions where the max was
+            self.grad += strided_grad.reshape(B, C_in, W_out * kernel_size) 
+
         if not Tensor._no_grad: self._backward = _backward
         return out
         
     def maxpool2d(self, kernel_size:tuple[int,int]=(2,2)):
         assert self.data.ndim == 4, f"Input tensor must be batched 3d i.e. 4d but got {self.data.ndim=}"
-        assert self.shape[-2] % kernel_size[0] and self.shape[-1] % kernel_size[1], "The width and height of the image must be divisible by the kernel dimensions"
+        assert self.shape[-2] % kernel_size[0] == 0 and self.shape[-1] % kernel_size[1] == 0, "The width and height of the image must be divisible by the kernel dimensions"
         
-        B, C_in, H_in, W_in = self.shape
+        B, C, H_in, W_in = self.shape
         K_H, K_W = kernel_size
         H_out, W_out = H_in // K_H, W_in // K_W
         
-        *orig_strides, s2, s3 = self.data.strides
+        Bs, Cs, Hs, Ws = self.data.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
         strided = np.lib.stride_tricks.as_strided(self.data,
-            shape=(B, C_in, H_out, W_out, K_H, K_W),
-            strides=(*orig_strides, s2, s3, s2, s3) # configures array traversal: twice s2 and s3 to select a 2D sliding window
-        ).reshape(B, C_in, H_out, W_out, K_H*K_W)
+            shape=(B, C, H_out, W_out, K_H, K_W),  # Generate a new view that groups input elements into blocks of (K_H, K_W) along the height and width
+            strides=(Bs, Cs, Hs * K_H, Ws * K_W, Hs, Ws),  # Adjust strides to step over (K_H, K_W) elements along the height and width for each sliding window position
+        ).reshape(B, C, H_out, W_out, K_H * K_W)  # Reshape strided data to a flat (K_H * K_W) dimension per pool area for applying max operation.
         
-        max_indices = self.data.argmax(axis=-1)
-        out = Tensor(self.data.max(axis=-1), (self,), "maxpool2d")
+        max_indices = strided.reshape(B, C, H_out, W_out, K_H * K_W).argmax(axis=-1, keepdims=True)
+        out = Tensor(strided.max(axis=-1), (self,), "maxpool2d")
         
         def _backward():
             strided_grad = np.zeros_like(strided)
-            np.put_along_axis(strided_grad, max_indices[..., None], out.grad[..., None], axis=-1)
-            self.grad += strided_grad.reshape(B, C_in, H_in, W_in)
+            np.put_along_axis(strided_grad, max_indices, out.grad[..., None], axis=-1)  # Propagate gradients to positions where the max was
+            strided_grad = strided_grad.reshape(B, C, H_out, W_out, K_H, K_W)
+            self.grad += strided_grad.swapaxes(3,4).reshape(B, C, H_in, W_in)
             
         if not Tensor._no_grad: self._backward = _backward
         return out

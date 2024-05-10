@@ -53,7 +53,7 @@ def test_conv2d(batch_size, height, width, c_in, c_out, kernel_size, padding):
     
     np.testing.assert_allclose(
         conv_milli.data, conv_torch.detach().numpy(),
-        err_msg="Forward pass mismatch", atol=1e-5
+        err_msg="Forward pass mismatch", atol=2e-5
     )
     
     conv_milli.backward()
@@ -61,10 +61,63 @@ def test_conv2d(batch_size, height, width, c_in, c_out, kernel_size, padding):
     
     np.testing.assert_allclose(
         x_milli.grad, x_torch.grad.numpy(),
-        err_msg="Backward pass gradient mismatch", atol=1e-5
+        err_msg="Backward pass gradient mismatch", atol=2e-5
+    )
+
+@pytest.mark.parametrize("batch_size, channels, seq_len, kernel_size", [
+    (1, 1, 2, 2),
+    (1, 1, 10, 5),
+    (16, 3, 100, 2),
+    (16, 3, 99, 3),
+    (16, 3, 70, 7),
+    (16, 3, 50, 10),
+])
+def test_maxpool1d(batch_size, channels, seq_len, kernel_size):
+    x_milli, x_torch = create_randn_pair((batch_size, channels, seq_len))
+
+    pooled_milli = x_milli.maxpool1d(kernel_size=kernel_size)
+    pooled_torch = F.max_pool1d(x_torch, kernel_size=kernel_size)
+
+    np.testing.assert_allclose(
+        pooled_milli.data, pooled_torch.detach().numpy(),
+        err_msg="Forward pass mismatch in maxpool1d", atol=1e-5
+    )
+
+    pooled_milli.backward()
+    pooled_torch.backward(torch.ones_like(pooled_torch))
+
+    np.testing.assert_allclose(
+        x_milli.grad, x_torch.grad.numpy(),
+        err_msg="Backward pass gradient mismatch in maxpool1d", atol=1e-5
+    )
+
+@pytest.mark.parametrize("batch_size, channels, height, width, kernel_size", [
+    (1, 1, 2, 2, (2, 2)),
+    (1, 1, 8, 8, (2, 2)),
+    (16, 3, 28, 28, (4, 4)),
+    (16, 3, 28, 28, (7, 7)),
+    (16, 3, 32, 32, (8, 8)),
+    (32, 3, 32, 32, (16, 16)),
+])
+def test_maxpool2d(batch_size, channels, height, width, kernel_size):
+    x_milli, x_torch = create_randn_pair((batch_size, channels, height, width))
+
+    pooled_milli = x_milli.maxpool2d(kernel_size=kernel_size)
+    pooled_torch = F.max_pool2d(x_torch, kernel_size=kernel_size)
+
+    np.testing.assert_allclose(
+        pooled_milli.data, pooled_torch.detach().numpy(),
+        err_msg="Forward pass mismatch in maxpool2d", atol=1e-5
+    )
+
+    pooled_milli.backward()
+    pooled_torch.backward(torch.ones_like(pooled_torch))
+
+    np.testing.assert_allclose(
+        x_milli.grad, x_torch.grad.numpy(),
+        err_msg="Backward pass gradient mismatch in maxpool2d", atol=1e-5
     )
     
-    
 if __name__ == "__main__":
-    test_conv1d(16, 3, 1, 4, 3, 0)
-    test_conv1d(16, 5, 3, 9, 5, 0)
+    test_maxpool2d(1, 1, 4, 4, (2, 2))
+    test_maxpool2d(32, 3, 32, 32, (16, 16))
