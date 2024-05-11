@@ -130,18 +130,18 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def conv1d(self, kernels:Tensor, padding:int=0)->Tensor:
+    def conv1d(self, kernels:Tensor, padding:int=0, stride:int=1)->Tensor:
         B, C_in, W_in = self.shape  # Batch size, number of input channels, input width
         _, K, C_out = kernels.shape  # Number of input channels (again), kernel size, number of output channels
 
-        W_out = W_in - K + 1 + 2 * padding 
+        W_out = (W_in - K + 2 * padding) // stride + 1
 
         pad = np.pad(self.data, ((0, 0), (0, 0), (padding, padding)), mode='constant', constant_values=0)  # i.e. padding the third dimension with 'padding' amount of zeroes on both sides
 
         Bs, Cs, Ws = pad.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
         strided = np.lib.stride_tricks.as_strided(pad,
             shape=(B, C_in, W_out, K),  # Create a 4D view of the padded input, where each slice along the third dimension is a segment of length K, effectively "unfolding" the kernel's spatial extent
-            strides=(Bs, Cs, Ws, Ws)  # Configure the strides to slide the kernel window over the input, moving K elements at a time along the spatial dimension
+            strides=(Bs, Cs, Ws * stride, Ws)  # Configure the strides to slide the kernel window over the input, moving K elements at a time along the spatial dimension
         )  
 
         out = Tensor(np.einsum("biwk,iko->bow", strided, kernels.data, optimize=True), (self, kernels), "conv1d")
@@ -150,7 +150,8 @@ class Tensor:
             kernels.grad += np.einsum("biwk,bow->iko", strided, out.grad, optimize=True)  # Convolution operation to update kernels' gradients
 
             flipped_kernels = np.flip(kernels.data, axis=1)  # Flip the kernels along the spatial dimension for cross-correlation in the backward pass
-            padded_grad = np.pad(out.grad, ((0, 0), (0, 0), (K - 1, K - 1)), mode='constant', constant_values=0)  # Pad by K-1 to mimic how, due to initial padding, edge output pixels can be influenced by just a corner of the kernel
+            padding_out = max((stride * (W_in - 1) + K - W_out) // 2, 0)
+            padded_grad = np.pad(out.grad, ((0, 0), (0, 0), (padding_out, padding_out)), mode='constant', constant_values=0)  # Pad by K-1 to mimic how, due to initial padding, edge output pixels can be influenced by just a corner of the kernel
 
             Bs, Cs, Ws = padded_grad.strides  # Unpack the strides of the padded input, which define how to navigate the memory layout of the array
             strided_grad = np.lib.stride_tricks.as_strided(padded_grad,

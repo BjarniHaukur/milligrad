@@ -7,21 +7,21 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-@pytest.mark.parametrize("batch_size, seq_len, c_in, c_out, kernel_size, padding", [
-    (1, 1, 1, 1, 1, 0),
-    (1, 1, 1, 1, 1, 1),
-    (16, 100, 3, 4, 3, 2),
-    (16, 3, 1, 4, 3, 0),
-    (16, 5, 3, 9, 5, 0),
-    (16, 14, 3, 10, 7, 100),
+@pytest.mark.parametrize("batch_size, seq_len, c_in, c_out, kernel_size, padding, stride", [
+    (1, 1, 1, 1, 1, 0, 1),
+    (1, 1, 1, 1, 1, 1, 1),
+    (16, 100, 3, 4, 3, 2, 3),
+    (16, 3, 1, 4, 3, 0, 3),
+    (16, 5, 3, 9, 5, 0, 2),
+    (16, 14, 3, 10, 7, 100, 2),
 ])  
-def test_conv1d(batch_size, seq_len, c_in, c_out, kernel_size, padding):
+def test_conv1d(batch_size, seq_len, c_in, c_out, kernel_size, padding, stride):
     kernels_milli, kernels_torch = create_randn_pair((c_in, kernel_size, c_out))
     kernels_torch = kernels_torch.permute(2,0,1) # PyTorch uses (out_channels, in_channels, wH)
     x_milli, x_torch = create_randn_pair((batch_size, c_in, seq_len))
 
-    conv_milli = x_milli.conv1d(kernels_milli, padding=padding)
-    conv_torch = F.conv1d(x_torch, kernels_torch, padding=padding)
+    conv_milli = x_milli.conv1d(kernels_milli, padding=padding, stride=stride)
+    conv_torch = F.conv1d(x_torch, kernels_torch, padding=padding, stride=stride)
     
     np.testing.assert_allclose(
         conv_milli.data, conv_torch.detach().numpy(),
@@ -119,6 +119,6 @@ def test_maxpool2d(batch_size, channels, height, width, kernel_size):
     )
     
 if __name__ == "__main__":
-    test_conv1d(16, 100, 3, 4, 3, 2)
+    test_conv1d(16, 100, 3, 4, 3, 2, 3)
     test_maxpool2d(1, 1, 4, 4, (2, 2))
     test_maxpool2d(32, 3, 32, 32, (16, 16))
