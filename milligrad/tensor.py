@@ -10,11 +10,13 @@ def topological_sort(tensor:Tensor)->list[Tensor]:
     stack = []
     
     def _topological_sort(tensor:Tensor):
-        if tensor not in visited:
-            visited.add(tensor)
-            for child in tensor._prev:
-                _topological_sort(child)
-            stack.append(tensor)
+        if tensor in visited: return
+
+        visited.add(tensor)
+        for prev in tensor._prev:
+            _topological_sort(prev)
+            
+        stack.append(tensor)
     
     _topological_sort(tensor)
     return stack
@@ -36,15 +38,13 @@ class Tensor:
         def __enter__(self): self.prev_no_grad, Tensor._no_grad = Tensor._no_grad, True 
         def __exit__(self, *args): Tensor._no_grad = self.prev_no_grad
 
-    def __init__(self, data:np.ndarray|list|int|float, _children:tuple[Tensor]=(), _grad_fn:str=""):
-        # sometimes isinstance fails in notebooks when changing the class definition
-        # bails out here if data is e.g. Tensor ^^^
-        assert isinstance(data, (np.ndarray, list, int, float)), f"Invalid data type {type(data)}"
-        self.data = np.array(data)
+    def __init__(self, data:np.ndarray|list|int|float, _prev:tuple[Tensor]=(), _grad_fn:str=""):
+        assert isinstance(data, (np.ndarray, np.float32, list, int, float)), f"Invalid data type {type(data)}"
+        self.data = np.array(data, dtype=np.float32)
         self.grad = np.zeros_like(data, dtype=np.float32)
         
         self._backward = lambda: None # a closure, added by operators
-        self._prev = dict.fromkeys(reversed(_children)).keys() # "ordered set" of children
+        self._prev = tuple(dict.fromkeys(reversed(_prev)).keys()) # "ordered set" of prev
         self._grad_fn = _grad_fn # nice to have
         
     @classmethod
@@ -62,7 +62,7 @@ class Tensor:
         assert not Tensor._no_grad, "No gradient tracking when in no_grad mode"
         self.grad = np.ones_like(self.data) # dL/dL = 1
         
-        for tensor in reversed(topological_sort(self)):
+        for i, tensor in enumerate(reversed(topological_sort(self))):
             tensor._backward() # relevant data kept in these closures
             tensor._backward = lambda: None # free memory, drop closures
             
@@ -296,7 +296,7 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def std(self, axis:int=-1, unbiased:bool=False)->Tensor:
+    def std(self, axis:int=None, unbiased:bool=False)->Tensor:
         N = self.data.size if axis is None else self.data.shape[axis]
         mean = self.data.mean(axis, keepdims=True)
         std_dev = np.sqrt(((self.data - mean)**2).sum(axis, keepdims=True) / (N - unbiased))
@@ -387,6 +387,27 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
+    def __getitem__(self, idx):
+        out = Tensor(self.data[idx], (self,), "__getitem__")
+
+        if not Tensor._no_grad:
+            self._backward = lambda: np.add.at(self.grad, idx, out.grad)
+
+        return out
+
+    @staticmethod
+    def stack(tensors:list[Tensor], axis:int)->Tensor:
+        out = Tensor(np.stack([t.data for t in tensors], axis=axis), tuple(tensors), "stack")
+
+        if not Tensor._no_grad:
+            for i, t in enumerate(tensors):
+                def _backward(t=t, i=i, prev_backward=t._backward):
+                    t.grad += np.take(out.grad, i, axis=axis)
+                    prev_backward()
+                t._backward = _backward
+
+        return out
+
     ###################################################################################
     ############## The following functions simply apply other functions ###############
     ###################################################################################

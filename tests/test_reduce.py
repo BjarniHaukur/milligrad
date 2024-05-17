@@ -1,10 +1,8 @@
-from milligrad.tensor import Tensor
 from tests.utils import create_randn_pair
 
 import pytest
 
 import torch
-import torch.nn.functional as F
 import numpy as np
 
 shapes_and_axis = [
