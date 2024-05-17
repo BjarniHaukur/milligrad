@@ -1,183 +1,10 @@
-
-#!pip install git+https://github.com/BjarniHaukur/milligrad.git
-from __future__ import annotations
-
 import pickle
 
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-
-#### THE FOLLOWING 150 lines IS THE IMPLEMENTATION OF THE TENSOR CLASS ####
-# Heavily inspired by Andrej Karpathy's micrograd and George Hotz' tinygrad
-
-# Tensor class is simply two numpy arrays, one for data and one for gradients
-# the operations on these tensors construct a computation graph that can be backpropagated
-
-# NOTE: this is a pruned version of my original implementation, which can be found at
-# https://github.com/BjarniHaukur/milligrad
-
-def topological_sort(tensor:Tensor)->list[Tensor]:
-    visited = set()
-    stack = []
-    
-    def _topological_sort(tensor:Tensor):
-        if tensor not in visited:
-            visited.add(tensor)
-            for child in tensor._prev:
-                _topological_sort(child)
-            stack.append(tensor)
-    
-    _topological_sort(tensor)
-    return stack
-
-def broadcast_to(grad:np.ndarray|np.float32, shape:tuple[int])->np.ndarray:
-    if len(grad.shape) > len(shape): 
-        return grad.sum(axis=tuple(range(0, len(grad.shape) - len(shape)))) # starts from 0, aka the batch axis
-    if len(grad.shape) < len(shape): # np.float / np.int etc. has shape ()
-        return np.broadcast_to(grad, shape)
-    return grad
-    
-class Tensor:
-    def __init__(self, data:np.ndarray|list|int|float, _children:tuple[Tensor]=(), _grad_fn:str=""):
-        # sometimes isinstance fails in notebooks when changing the class definition
-        # bails out here if data is e.g. Tensor ^^^
-        assert isinstance(data, (np.ndarray, list, int, float)), f"Invalid data type {type(data)}"
-        self.data = np.array(data)
-        self.grad = np.zeros_like(data)
-        
-        self._backward = lambda: None # a closure, added by operators
-        # "ordered set" (dict keys are ordered in python 3.7+)
-        # reversed to backpropagate in the right order
-        # required to avoid circular references (e.g. a + a)
-        self._prev = dict.fromkeys(reversed(_children)).keys() 
-        self._grad_fn = _grad_fn # nice to have
-        
-    @classmethod
-    def randn(cls, *shape:int, std:float=1.0): return cls(np.random.randn(*shape)*std)
-    @classmethod
-    def xavier(cls, n_in:int, n_out:int):
-        bound = np.sqrt(6/(n_in + n_out))
-        return cls(np.random.uniform(-bound, bound, (n_in, n_out)))
-    
-    def backward(self):
-        self.grad = np.ones_like(self.data) # dL/dL = 1
-        
-        for tensor in reversed(topological_sort(self)):
-            tensor._backward() # relevant data kept in these closures
-            
-    ###################################################################################
-    ##### The following operations perform all the necessary gradient bookkeeping #####
-    ###################################################################################
-    # note that we use += instead of assignments in the _backward since the same tensor
-    # can be used multiple times in the computation graph
-    
-    def __add__(self, other:Tensor|int|float)->Tensor:
-        other = other if isinstance(other, Tensor) else Tensor(other)
-        out = Tensor(self.data + other.data, (self, other), "+")
-
-        def _backward():
-            self.grad += broadcast_to(out.grad, self.shape)
-            other.grad += broadcast_to(out.grad, other.shape)
-            
-        self._backward = _backward
-        return out
-    
-    # the * operator is element-wise multiplication
-    def __mul__(self, other:Tensor|int|float)->Tensor:
-        other = other if isinstance(other, Tensor) else Tensor(other)
-        out = Tensor(self.data * other.data, (self, other), "*")
-        
-        def _backward():
-            self.grad += broadcast_to(out.grad * other.data, self.shape)
-            other.grad += broadcast_to(out.grad * self.data, other.shape)
-        
-        self._backward = _backward
-        return out
-    
-    # the @ operator is matrix multiplication
-    def __matmul__(self, other:Tensor)->Tensor:
-        out = Tensor(self.data @ other.data, (self, other), "@")
-        
-        def _backward():
-            self.grad += out.grad @ other.data.T
-            other.grad += self.data.T @ out.grad
-            
-        self._backward = _backward
-        return out
-    
-    def __neg__(self)->Tensor:
-        out = Tensor(-self.data, (self,), "-")
-        
-        def _backward():
-            self.grad += -out.grad
-            
-        self._backward = _backward
-        return out
-    
-    # the ** operator is element-wise power
-    def __pow__(self, power:int|float)->Tensor:
-        out = Tensor(self.data**power, (self,), f"**{power}")
-        
-        def _backward():
-            self.grad += power * self.data**(power-1) * out.grad
-            
-        self._backward = _backward
-        return out
-    
-    def sum(self, axis:int=-1)->Tensor:
-        out = Tensor(self.data.sum(axis), (self,), "sum")
-        
-        def _backward():
-            self.grad += np.expand_dims(out.grad, axis) # broadcast the gradient
-            
-        self._backward = _backward
-        return out
-    
-    def mean(self, axis:int=-1)->Tensor:
-        out = Tensor(self.data.mean(axis), (self,), "mean")
-        
-        def _backward():
-            self.grad += np.expand_dims(out.grad, axis) / self.data.shape[axis]
-            
-        self._backward = _backward
-        return out
-    
-    def relu(self)->Tensor:
-        out = Tensor(np.maximum(self.data, 0), (self,), "relu")
-        
-        def _backward():
-            self.grad += (self.data > 0) * out.grad
-            
-        self._backward = _backward
-        return out
-    
-    # can be replaced with .softmax().log() but this is more efficient and numerically stable
-    def log_softmax(self, axis:int=-1)->Tensor:
-        shifted = self.data - np.max(self.data, axis=axis, keepdims=True)
-        log_probs = shifted - np.log(np.exp(shifted).sum(axis=axis, keepdims=True))
-        out = Tensor(log_probs, (self,), "log_softmax")
-        
-        def _backward():
-            self.grad += out.grad - np.exp(log_probs) * out.grad.sum(axis=axis, keepdims=True)
-            
-        self._backward = _backward
-        return out
-    
-    ###################################################################################
-    ############## The following functions simply apply other functions ###############
-    ###################################################################################
-    
-    def __sub__(self, other:Tensor|int|float)->Tensor: return self + (-other)
-    def __radd__(self, other:int|float)->Tensor: return self + other
-    def __rsub__(self, other:int|float)->Tensor: return other + (-self)
-    def __rmul__(self, other:int|float)->Tensor: return self * other
-    def __truediv__(self, other:Tensor)->Tensor: return self * other**-1
-    
-    @property
-    def shape(self)->tuple[int]:
-        return self.data.shape
+from milligrad import Tensor, topological_sort
 
 
 ########## 1. Read CIFAR-10
@@ -216,12 +43,11 @@ y_train, y_val, y_test = np.eye(10)[y_train], np.eye(10)[y_val], np.eye(10)[y_te
 
 ########## 3 - 4. Initialize the model and write the forward function (i.e. \_\_call\_\_)
 
-from tensor import Tensor
 
 class Model:
     def __init__(self):
-        self.w = Tensor.randn(3072, 10, std=0.01)
-        self.b = Tensor.randn(10, std=0.01)
+        self.w = Tensor.randn(3072, 10) * 0.01
+        self.b = Tensor.randn(10) * 0.01
         
     def __call__(self, x):
         return x @ self.w + self.b
@@ -242,19 +68,19 @@ def accuracy(y, y_hat):
 # After we compute the cost, we can call `cost.backward()` to backpropagate through the computational graph and compute the gradients. All `Tensor` objects will have their `.grad` attribute updated with the gradient of the cost with respect to that tensor. So the gradient of the weights/biases can simply be accessed by `model.weight.grad` and `model.bias.grad`.
 
 
-w = Tensor.randn(3072, 10, std=0.01)
-b = Tensor.randn(10, std=0.01)
+w = Tensor.randn(3072, 10) * 0.01
+b = Tensor.randn(10) * 0.01
 
 x = Tensor.randn(100, 3072)
 y = Tensor.randn(100, 10)
 
 y_hat = x @ w + b
-cost = (-(y * y_hat.log_softmax())).sum().mean() + 1e-3 * (w ** 2).sum().sum()
+cost = -(y * y_hat.log_softmax()).sum().mean() + 1e-3 * (w ** 2).sum().sum()
 
 print(f"The cost is {cost.data}")
 # The cost is 1.2976623704333754
 
-from tensor import topological_sort
+
 print("The computational graph:")
 print([x._grad_fn for x in reversed(topological_sort(cost)) if x._grad_fn])
 # The computational graph:
