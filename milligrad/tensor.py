@@ -44,8 +44,8 @@ class Tensor:
         self.grad = np.zeros_like(data, dtype=np.float32)
         
         self._backward = lambda: None # a closure, added by operators
-        self._prev = tuple(dict.fromkeys(reversed(_prev)).keys()) # "ordered set" of prev
-        self._grad_fn = _grad_fn # nice to have
+        self._prev = tuple(dict.fromkeys(reversed(_prev)).keys()) # "ordered set" of previous tensors
+        self._grad_fn = _grad_fn # nice to have for printing and debugging
         
     @classmethod
     def zeros(cls, *shape:int): return cls(np.zeros(shape))
@@ -159,7 +159,7 @@ class Tensor:
             )
 
             input_grad = np.einsum('bowk,iko->biw', strided_grad, flipped_kernels, optimize=True)  # Convolution to compute input gradients
-            self.grad += input_grad[..., padding:W_in + padding]  # Adjust for the original padding
+            self.grad += input_grad[..., padding : W_in + padding]  # Adjust for the original padding
 
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -195,7 +195,7 @@ class Tensor:
             )
 
             dpad = np.einsum('bkhwij,cijk->bchw', strided_grad, flipped_kernels, optimize=True)  # Convolution to compute input gradients
-            self.grad += dpad[:, :, p1:H_in + p1, p2:W_in + p2]  # Adjust for the original padding
+            self.grad += dpad[:, :, p1 : H_in + p1, p2 : W_in + p2]  # Adjust for the original padding
 
         if not Tensor._no_grad: self._backward = _backward
         return out
@@ -317,7 +317,11 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    # could be handled via a bunch of other ops, but the derivative of tanh is well-known
+    ###################################################################################
+    ##### The following operations could be performed by combining other ops but  #####
+    ##### they are implemented directly for efficiency and numerical stability    #####
+    ###################################################################################
+    
     def tanh(self)->Tensor:
         out = Tensor(np.tanh(self.data), (self,), "tanh")
         
@@ -327,7 +331,6 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    # same for sigmoid
     def sigmoid(self)->Tensor:
         out = Tensor(1/(1 + np.exp(-self.data)), (self,), "sigmoid")
         
@@ -337,24 +340,16 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    # same with softmax but it would introduce numerical instability 
     def softmax(self)->Tensor:
-        shifted_exp = np.exp(self.data - np.max(self.data, axis=-1, keepdims=True)) # numerical stability
+        shifted_exp = np.exp(self.data - np.max(self.data, axis=-1, keepdims=True))  # numerical stability
         out = Tensor(shifted_exp / shifted_exp.sum(axis=-1, keepdims=True), (self,), "softmax")
         
-        def _backward():            
-            # ij,ik->ijk computes the outer product of each pair in softmax_output
-            jacobian_matrix = np.einsum('ij,ik->ijk', out.data, out.data)
-            diag_indices = np.arange(out.shape[-1])
-            # subtract softmax output from the diagonal elements
-            jacobian_matrix[:, diag_indices, diag_indices] -= out.data
-            # Matmul the Jacobian matrix with the gradient of the output
-            self.grad += np.einsum('ijk,ik->ij', jacobian_matrix, out.grad)
+        def _backward():
+            self.grad += out.data * (out.grad - (out.data * out.grad).sum(axis=-1, keepdims=True))  # gradient w.o. full constructing full Jacobian
             
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    # can be replaced with .softmax().log() but this is more efficient and numerically stable
     def log_softmax(self)->Tensor:
         shifted = self.data - np.max(self.data, axis=-1, keepdims=True)
         log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
@@ -387,7 +382,7 @@ class Tensor:
         if not Tensor._no_grad: self._backward = _backward
         return out
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx:int|slice|np.ndarray)->Tensor:
         out = Tensor(self.data[idx], (self,), "__getitem__")
 
         if not Tensor._no_grad:
@@ -420,7 +415,7 @@ class Tensor:
     def mean(self, axis:int=None)->Tensor:
         return self.sum(axis) / (self.data.size if axis is None else self.data.shape[axis])
     
-    def __repr__(self):
+    def __repr__(self)->str:
         data_repr = self.data.__repr__().removeprefix("array")[1:-1] # drop array and parentheses
         grad_repr = ", grad_fn=" + self._grad_fn if self._grad_fn else "" # if grad_fn is empty, don't show it
         return f"Tensor({data_repr}{grad_repr})"
